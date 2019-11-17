@@ -44,9 +44,11 @@ void gt_chan_write(gt_chan_t c, gt_val v);
 // Read from a channel
 gt_val gt_chan_read(gt_chan_t c);
 
+void gt_dump(void);
+
 // ---------------------------- Hyperparameters --------------------------------
 
-#define GT_CHAN_SIZE 0x20
+#define GT_CHAN_SIZE 0x8
 #define GT_STACK_SIZE 0x400000
 #define GT_INITIAL_N_THREADS 8
 #define GT_INITIAL_N_CHANNELS 8
@@ -74,7 +76,7 @@ struct gt_chan {
   // Read/write queues are linked lists
   gt_queue readers, writers;
   // Values are stored in a ring-buffer
-  gt_chan_t first, last;
+  size_t first, last;
   gt_chan_t values[GT_CHAN_SIZE];
   bool on;
 };
@@ -135,6 +137,7 @@ static gt_ctx *gt_next(gt_ctx *c) {
 }
 
 bool gt_yield(void) {
+  gt_dump();
   // Find next ON thread
   gt_ctx *old_current = current, *c = gt_next(current);
   while (c != current && c->st != GT_ON)
@@ -180,13 +183,13 @@ void gt_queue_enqueue(gt_queue *q, gt_id_t i) {
 
 // ------------------------------ Ring buffer ----------------------------------
 
-static gt_chan_t gt_chan_succ(gt_chan_t i) { return (i + 1ul) % GT_CHAN_SIZE; }
+static size_t gt_chan_succ(size_t i) { return (i + 1ul) % GT_CHAN_SIZE; }
 
 bool gt_chan_empty(gt_chan *c) { return c->first == c->last; }
 
 bool gt_chan_full(gt_chan *c) { return gt_chan_succ(c->last) == c->first; }
 
-gt_chan *gt_chan_get(gt_chan_t i) { return &channels[i - 1]; }
+gt_chan *gt_chan_get(size_t i) { return &channels[i - 1]; }
 
 gt_val gt_chan_dequeue(gt_chan *c) {
   assert(!gt_chan_empty(c) && "gt_chan_dequeue: reading from empty queue");
@@ -256,4 +259,21 @@ void gt_chan_write(gt_chan_t c, gt_val v) {
   if (!gt_queue_empty(&ch->readers))
     gt_get(gt_queue_dequeue(&ch->readers))->st = GT_ON;
   gt_chan_enqueue(ch, v);
+}
+
+void gt_dump(void) {
+  puts("----------- Threads -----------");
+  for (size_t i = 0; i < n_threads; ++i) {
+    printf("%lu: ", i);
+    switch (threads[i].st) {
+      case GT_ON: printf("ON"); break;
+      case GT_OFF: printf("OFF"); break;
+      case GT_IDLE: printf("IDLE"); break;
+    }
+    puts(i == current - threads ? " (ACTIVE)" : "");
+  }
+  puts("---------- Channels -----------");
+  for (size_t i = 0; i < n_channels; ++i) {
+    // TODO
+  }
 }

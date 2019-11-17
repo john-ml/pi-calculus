@@ -1,2 +1,3 @@
 all:
-	gcc test.c gt_switch.s -o test
+	gcc -g counting.c gt_switch.s -o counting
+	gcc -g consumption.c gt_switch.s -o consumption
