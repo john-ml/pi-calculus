@@ -28,32 +28,30 @@ void gt_stop(void);
 // Can only be called from bootstrap thread
 void gt_exit(int c);
 
-// -----------------------------------------------------------------------------
-
 // A communication channel
 typedef struct gt_chan gt_chan;
 
 // Channels are values in pi-calculus
-typedef size_t gt_chan_id;
-typedef gt_chan_id gt_val;
+typedef size_t gt_chan_t;
+typedef gt_chan_t gt_val;
 
 // Create a new channel
-gt_chan_id gt_chan_new(void);
+gt_chan_t gt_chan_new(void);
 
 // Write v to a channel
-void gt_chan_write(gt_chan_id c, gt_val v);
+void gt_chan_write(gt_chan_t c, gt_val v);
 
 // Read from a channel
-gt_val gt_chan_read(gt_chan_id c);
+gt_val gt_chan_read(gt_chan_t c);
 
-// -----------------------------------------------------------------------------
+// ---------------------------- Hyperparameters --------------------------------
 
 #define GT_CHAN_SIZE 0x20
 #define GT_STACK_SIZE 0x400000
 #define GT_INITIAL_N_THREADS 8
 #define GT_INITIAL_N_CHANNELS 8
 
-// -----------------------------------------------------------------------------
+// -------------------- Context and channel data structures --------------------
 
 // Thread state
 typedef enum gt_st {GT_OFF = 0, GT_ON, GT_IDLE} gt_st;
@@ -76,12 +74,12 @@ struct gt_chan {
   // Read/write queues are linked lists
   gt_queue readers, writers;
   // Values are stored in a ring-buffer
-  gt_chan_id first, last;
-  gt_chan_id values[GT_CHAN_SIZE];
+  gt_chan_t first, last;
+  gt_chan_t values[GT_CHAN_SIZE];
   bool on;
 };
 
-// -----------------------------------------------------------------------------
+// ------------------------------ Global state ---------------------------------
 
 // Thread pool
 static size_t n_threads = GT_INITIAL_N_THREADS;
@@ -92,7 +90,7 @@ static gt_ctx *current; // Currently executing thread
 static size_t n_channels = GT_INITIAL_N_CHANNELS;
 static gt_chan *channels;
 
-// -----------------------------------------------------------------------------
+// ---------------------------------- Threads ----------------------------------
 
 // Stash old context and switch to new
 void gt_switch(gt_ctx *old, gt_ctx *new);
@@ -110,7 +108,9 @@ void gt_go(void f(void)) {
   // ...and expand thread pool if necessary
   if (c == &threads[n_threads]) {
     size_t m = 2*n_threads;
+    size_t offset = current - threads;
     threads = realloc(threads, m*sizeof(gt_ctx));
+    current = threads + offset;
     memset(&threads[n_threads], 0, n_threads*sizeof(gt_ctx));
     c = &threads[n_threads];
     n_threads = m;
@@ -160,19 +160,33 @@ void gt_exit(int c) {
   exit(c);
 }
 
-// -----------------------------------------------------------------------------
+// --------------------------- Read/write queue --------------------------------
 
 bool gt_queue_empty(gt_queue *q) { return !q->front; }
 
-// -----------------------------------------------------------------------------
+gt_id_t gt_queue_dequeue(gt_queue *q) {
+  assert(!gt_queue_empty(q) && "gt_queue_dequeue: dequeueing from empty queue");
+  gt_id_t r = q->front;
+  q->front = gt_get(r)->next;
+  return r;
+}
 
-static gt_chan_id gt_chan_succ(gt_chan_id i) { return (i + 1ul) % GT_CHAN_SIZE; }
+void gt_queue_enqueue(gt_queue *q, gt_id_t i) {
+  if (gt_queue_empty(q))
+    q->front = q->back = i;
+  else
+    q->back = gt_get(q->back)->next = i;
+}
+
+// ------------------------------ Ring buffer ----------------------------------
+
+static gt_chan_t gt_chan_succ(gt_chan_t i) { return (i + 1ul) % GT_CHAN_SIZE; }
 
 bool gt_chan_empty(gt_chan *c) { return c->first == c->last; }
 
 bool gt_chan_full(gt_chan *c) { return gt_chan_succ(c->last) == c->first; }
 
-gt_chan *gt_chan_get(gt_chan_id i) { return &channels[i - 1]; }
+gt_chan *gt_chan_get(gt_chan_t i) { return &channels[i - 1]; }
 
 gt_val gt_chan_dequeue(gt_chan *c) {
   assert(!gt_chan_empty(c) && "gt_chan_dequeue: reading from empty queue");
@@ -187,8 +201,10 @@ void gt_chan_enqueue(gt_chan *c, gt_val v) {
   c->last = gt_chan_succ(c->last);
 }
 
+// ---------------------------------- Channel ----------------------------------
+
 // Create a new channel
-gt_chan_id gt_chan_new(void) {
+gt_chan_t gt_chan_new(void) {
   // Find unused channel...
   gt_chan *c = channels;
   while (c < &channels[n_channels] && c->on)
@@ -202,7 +218,7 @@ gt_chan_id gt_chan_new(void) {
   } else
     memset(c, 0, sizeof(gt_chan));
   assert(!c->on && "gt_chan_new: clobbering used channel");
-  return (gt_chan_id)(c - channels) + 1ul;
+  return (gt_chan_t)(c - channels) + 1ul;
 }
 
 // Reading from a channel on thread r:
@@ -210,7 +226,7 @@ gt_chan_id gt_chan_new(void) {
 //   (ws       , []       , []          ) ~~> (ws, [], [r]      ), r IDLE
 //   ([]       , xs ++ [x], []          ) ~~> ([], xs, []       ), cont r(x)
 //   (ws ++ [w], xs ++ [x], []          ) ~~> (ws, xs, []       ), cont r(x), w ON
-gt_val gt_chan_read(gt_chan_id c) {
+gt_val gt_chan_read(gt_chan_t c) {
   gt_chan *ch = gt_chan_get(c);
   if (!gt_queue_empty(&ch->readers) || gt_chan_empty(ch)) {
     gt_queue_enqueue(&ch->readers, gt_id());
@@ -229,5 +245,15 @@ gt_val gt_chan_read(gt_chan_id c) {
 //   ([]          , FULL       , rs       ) ~~> ([w]      , FULL       , rs), w IDLE
 //   ([]          , non-full xs, [r] ++ rs) ~~> ([]       , [x] ++ [xs], rs), r ON, cont w
 //   ([]          , non-full xs, []       ) ~~> ([]       , [x] ++ xs  , []), cont w
-void gt_chan_write(gt_chan_id c, gt_val v) {
+void gt_chan_write(gt_chan_t c, gt_val v) {
+  gt_chan *ch = gt_chan_get(c);
+  if (!gt_queue_empty(&ch->writers) || gt_chan_full(ch)) {
+    gt_queue_enqueue(&ch->writers, gt_id());
+    current->st = GT_IDLE;
+    gt_yield();
+  }
+  ch = gt_chan_get(c);
+  if (!gt_queue_empty(&ch->readers))
+    gt_get(gt_queue_dequeue(&ch->readers))->st = GT_ON;
+  gt_chan_enqueue(ch, v);
 }
