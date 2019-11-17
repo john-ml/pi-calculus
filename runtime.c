@@ -50,8 +50,8 @@ void gt_dump(void);
 
 #define GT_CHAN_SIZE 0x8
 #define GT_STACK_SIZE 0x400000
-#define GT_INITIAL_N_THREADS 8
-#define GT_INITIAL_N_CHANNELS 8
+#define GT_INITIAL_N_THREADS 4
+#define GT_INITIAL_N_CHANNELS 1
 
 // -------------------- Context and channel data structures --------------------
 
@@ -137,6 +137,7 @@ static gt_ctx *gt_next(gt_ctx *c) {
 }
 
 bool gt_yield(void) {
+  puts("--------------------\ngt_yield()");
   gt_dump();
   // Find next ON thread
   gt_ctx *old_current = current, *c = gt_next(current);
@@ -230,6 +231,8 @@ gt_chan_t gt_chan_new(void) {
 //   ([]       , xs ++ [x], []          ) ~~> ([], xs, []       ), cont r(x)
 //   (ws ++ [w], xs ++ [x], []          ) ~~> (ws, xs, []       ), cont r(x), w ON
 gt_val gt_chan_read(gt_chan_t c) {
+  printf("----------------------------\ngt_chan_read(%lu)\n", c);
+  gt_dump();
   gt_chan *ch = gt_chan_get(c);
   if (!gt_queue_empty(&ch->readers) || gt_chan_empty(ch)) {
     gt_queue_enqueue(&ch->readers, gt_id());
@@ -249,6 +252,8 @@ gt_val gt_chan_read(gt_chan_t c) {
 //   ([]          , non-full xs, [r] ++ rs) ~~> ([]       , [x] ++ [xs], rs), r ON, cont w
 //   ([]          , non-full xs, []       ) ~~> ([]       , [x] ++ xs  , []), cont w
 void gt_chan_write(gt_chan_t c, gt_val v) {
+  printf("----------------------------\ngt_chan_write(%lu, %lu)\n", c, v);
+  gt_dump();
   gt_chan *ch = gt_chan_get(c);
   if (!gt_queue_empty(&ch->writers) || gt_chan_full(ch)) {
     gt_queue_enqueue(&ch->writers, gt_id());
@@ -274,6 +279,18 @@ void gt_dump(void) {
   }
   puts("---------- Channels -----------");
   for (size_t i = 0; i < n_channels; ++i) {
-    // TODO
+    printf("%lu: %s\n", i, channels[i].on ? "ON" : "OFF");
+    printf("  readers: ");
+    for (gt_id_t id = channels[i].readers.front; id; id = gt_get(id)->next)
+      printf("%lu ", id);
+    puts("");
+    printf("  values: ");
+    for (size_t j = channels[i].first; j != channels[i].last; j = gt_chan_succ(j))
+      printf("%lu ", channels[i].values[j]);
+    puts("");
+    printf("  writers: ");
+    for (gt_id_t id = channels[i].writers.front; id; id = gt_get(id)->next)
+      printf("%lu ", id);
+    puts("");
   }
 }
