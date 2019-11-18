@@ -6,7 +6,7 @@ static int n = 0;
 void g(void) {
   while (n != 100)
     gt_yield();
-  printf("\n");
+  puts("\n");
 }
 
 void f(void) {
@@ -18,8 +18,17 @@ void f(void) {
 
 int main(void) {
   gt_init();
-  gt_go(g, 1024);
-  for (int i = 0; i < 10; ++i)
-    gt_go(f, 1024);
+  // If unoptimized
+  {
+    gt_go(g, 64); // No printf ==> don't really need any space
+    for (int i = 0; i < 10; ++i)
+      gt_go(f, 4096); // Need a lot for printf
+  }
+  // // If optimized
+  // {
+  //   gt_go(g, 32); // O2 => Need even less space
+  //   for (int i = 0; i < 10; ++i)
+  //     gt_go(f, 4096); // Need a lot for printf
+  // }
   gt_exit(0);
 }

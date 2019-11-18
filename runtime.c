@@ -61,7 +61,6 @@ typedef struct gt_ctx {
   char *rsp;
   uint64_t rbx, rbp, r12, r13, r14, r15;
   char *sp; // Thread stack
-  size_t stack_size; 
   gt_t next; // Used in read/write queues
   gt_st st;
 } gt_ctx;
@@ -132,6 +131,7 @@ void gt_go(void f(void), size_t n) {
   assert(!c->st && "gt_go: clobbering used thread");
   // Set up thread stack
   c->sp = !c->sp ? malloc(n) : realloc(c->sp, n);
+  assert(c->sp && "gt_go: failed to allocate stack");
   c->rsp = &c->sp[n - 16];
   *(uint64_t *)&c->sp[n - 8] = (uint64_t)gt_stop;
   *(uint64_t *)&c->sp[n - 16] = (uint64_t)f;
