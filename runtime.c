@@ -1,6 +1,6 @@
 // ---------------------------- Hyperparameters --------------------------------
 
-// #define NDEBUG
+#define NDEBUG
 #define GT_CHAN_SIZE 0x3
 
 // -----------------------------------------------------------------------------
@@ -261,11 +261,13 @@ gt_ch gt_chan(void) {
 //   ([]       , xs ++ [x], []          ) ~~> ([], xs, []       ), cont r(x)
 //   (ws ++ [w], xs ++ [x], []          ) ~~> (ws, xs, []       ), cont r(x), w ON
 gt_val gt_read(gt_ch c) {
-  while (!gt_queue_empty(&c->readers) || gt_ch_empty(c)) {
-    gt_queue_enq(&c->readers, current);
-    current->st = GT_IDLE;
-    debugf("%lu: WAIT gt_read(%lu)\n", current - threads, c - channels);
-    gt_yield();
+  if (!gt_queue_empty(&c->readers) || gt_ch_empty(c)) {
+    do {
+      gt_queue_enq(&c->readers, current);
+      current->st = GT_IDLE;
+      debugf("%lu: WAIT gt_read(%lu)\n", current - threads, c - channels);
+      gt_yield();
+    } while (gt_ch_full(c));
   }
   if (!gt_queue_empty(&c->writers))
     gt_queue_deq(&c->writers)->st = GT_ON;
@@ -281,13 +283,15 @@ gt_val gt_read(gt_ch c) {
 //   ([]          , non-full xs, [r] ++ rs) ~~> ([]       , [x] ++ [xs], rs), r ON, cont w
 //   ([]          , non-full xs, []       ) ~~> ([]       , [x] ++ xs  , []), cont w
 void gt_write(gt_ch c, gt_val v) {
-  while (!gt_queue_empty(&c->writers) || gt_ch_full(c)) {
-    gt_queue_enq(&c->writers, current);
-    current->st = GT_IDLE;
-    debugf("%lu: WAIT gt_write(%lu, %lu)\n",
-      current - threads, c - channels, v - channels);
-    gt_dump();
-    gt_yield();
+  if (!gt_queue_empty(&c->writers) || gt_ch_full(c)) {
+    do {
+      gt_queue_enq(&c->writers, current);
+      current->st = GT_IDLE;
+      debugf("%lu: WAIT gt_write(%lu, %lu)\n",
+        current - threads, c - channels, v - channels);
+      gt_dump();
+      gt_yield();
+    } while (gt_ch_full(c));
   }
   if (!gt_queue_empty(&c->readers))
     gt_queue_deq(&c->readers)->st = GT_ON;
