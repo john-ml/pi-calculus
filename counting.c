@@ -18,8 +18,8 @@ void f(void) {
 
 int main(void) {
   gt_init();
-  gt_go(g);
+  gt_go(g, 1024);
   for (int i = 0; i < 10; ++i)
-    gt_go(f);
+    gt_go(f, 1024);
   gt_exit(0);
 }
