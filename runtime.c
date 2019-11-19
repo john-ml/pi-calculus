@@ -1,7 +1,7 @@
 // ---------------------------- Hyperparameters --------------------------------
 
 #define NDEBUG
-#define GT_CHAN_SIZE 0x3
+#define GT_CHAN_SIZE 0x100
 
 // -----------------------------------------------------------------------------
 
@@ -45,27 +45,27 @@ typedef gt_ch gt_val;
 // Create a new channel
 gt_ch gt_chan(void);
 
-// Write v to a channel
-void gt_write(gt_ch c, gt_val v);
+// Destroy a channel
+void gt_drop(gt_ch c);
 
 // Read from a channel
 gt_val gt_read(gt_ch c);
 
-// Dump thread/channel state
+// Write v to a channel
+void gt_write(gt_ch c, gt_val v);
+
+// Dump thread + channel state
+// NB: Uses printf a lot so, make sure you have >= 4096 bytes of stack space.
 void gt_dump(void);
 
 // -------------------- Context and channel data structures --------------------
-
-// Thread state
-typedef enum gt_st {GT_OFF = 0, GT_ON, GT_IDLE} gt_st;
 
 // An execution context
 typedef struct gt_ctx {
   char *rsp;
   uint64_t rbx, rbp, r12, r13, r14, r15;
   char *sp; // Thread stack
-  gt_t next; // Used in read/write queues
-  gt_st st;
+  gt_t next; // Used in read/write queues, OFF list, ON circle
 } gt_ctx;
 
 typedef struct gt_queue {
@@ -74,12 +74,13 @@ typedef struct gt_queue {
 
 // Channel state: (waiting to write, ring buffer, waiting to read)
 struct gt_chan {
-  // Read/write queues are linked lists
+  // IDLE threads are stored in read/write queues
   struct gt_queue readers, writers;
-  // Values are stored in a ring-buffer
+  // Values are stored in a ring buffer
   size_t first, last;
   gt_val values[GT_CHAN_SIZE];
-  bool on;
+  // Free list
+  gt_ch next;
 };
 
 // ------------------------------ Global state ---------------------------------
@@ -92,13 +93,19 @@ register void *r14 asm ("r14");
 register void *r15 asm ("r15");
 
 // Thread pool
-static struct gt_ctx *threads; // &threads[0] is the bootstrap thread
-static struct gt_ctx *current; // Currently executing thread
-static struct gt_ctx *threads_end;
+static gt_t threads; // &threads[0] is the bootstrap thread
+static gt_t threads_end;
+// ON threads form a circular linked list
+static gt_t current; // Currently executing thread
+static gt_t parent; // Parent to currently executing thread
+// OFF threads form a free list
+static gt_t threads_free;
 
 // Channel
-static struct gt_chan *channels;
-static struct gt_chan *channels_end;
+static gt_ch channels;
+static gt_ch channels_end;
+// OFF channels form a free list
+static gt_ch channels_free;
 
 // ------------------------------ For debugging ---------------------------------
 
@@ -128,59 +135,65 @@ static void *mmalloc(size_t bytes) {
     -1, 0);
 }
 
+// Insert a thread into the circle
+static void gt_t_insert(gt_t t) {
+  parent = current == current->next ? (current->next = t) : (parent->next = t);
+  t->next = current;
+}
+
+// Remove (and return) self from circle
+static gt_t gt_t_excise(void) {
+  assert(current != current->next && "gt_t_excise: singleton circle");
+  gt_t t = current;
+  parent->next = current = current->next;
+  return t;
+}
+
 void gt_init(void) {
+  // mmap 4GB and split the address space in half
+  // Lower half for threads...
   threads = current = mmalloc(1ull << 32);
-  channels = channels_end = (struct gt_chan *)((char *)threads + (1ull << 31));
-  threads_end = current + 1;
   memset(current, 0, sizeof(gt_ctx));
-  current->st = GT_ON;
+  current->next = current;
+  threads_end = current + 1;
+  threads_free = NULL;
+  // ...and upper half for channels
+  channels = channels_end = (struct gt_chan *)((char *)threads + (1ull << 31));
+  channels_free = NULL;
 }
 
 void gt_go(void f(void), size_t n) {
-  // Find OFF thread
-  gt_ctx *c = threads;
-  while (c < threads_end && c->st != GT_OFF)
-    ++c;
-  if (c == threads_end) {
-    memset(c, 0, sizeof(gt_ctx));
-    ++threads_end;
-  }
-  assert(!c->st && "gt_go: clobbering used thread");
+  gt_t t;
+  if (threads_free) {
+    t = threads_free;
+    threads_free = threads_free->next;
+  } else
+    t = threads_end++;
+  memset(t, 0, sizeof(*t));
   // Set up thread stack
-  c->sp = !c->sp ? malloc(n) : realloc(c->sp, n);
-  assert(c->sp && "gt_go: failed to allocate stack");
-  c->rsp = &c->sp[n - 16];
-  *(uint64_t *)&c->sp[n - 8] = (uint64_t)gt_stop;
-  *(uint64_t *)&c->sp[n - 16] = (uint64_t)f;
-  c->st = GT_ON;
+  t->sp = !t->sp ? malloc(n) : realloc(t->sp, n);
+  assert(t->sp && "gt_go: failed to allocate stack");
+  t->rsp = &t->sp[n - 16];
+  *(uint64_t *)&t->sp[n - 8] = (uint64_t)gt_stop;
+  *(uint64_t *)&t->sp[n - 16] = (uint64_t)f;
+  gt_t_insert(t);
 }
 
 gt_t gt_self(void) { return current; }
 
-// Compute next thread in pool (with wraparound)
-static gt_t gt_next(gt_t c) {
-  return c + 1 >= threads_end ? threads : c + 1;
-}
-
 bool gt_yield(void) {
-  // Find next ON thread
-  gt_ctx *old_current = current, *c = gt_next(current);
-  while (c != current && c->st != GT_ON)
-    c = gt_next(c);
-  if (c == current)
-    return false; // No other ON threads
-  // Switch to the new thread
-  current = c;
-  //debugf("%lu: gt_yield()\n", old_current - threads);
-  //gt_dump();
-  gt_switch(old_current, current);
+  if (current == current->next)
+    return false;
+  current = current->next;
+  parent = parent->next;
+  gt_switch(parent, current);
   return true;
 }
 
 void gt_stop(void) {
-  current->st = GT_OFF;
-  gt_yield();
-  assert(!"gt_stop: gt_yield returned"); 
+  assert(current != current->next && "gt_stop: singleton circle");
+  gt_t t = gt_t_excise();
+  gt_switch(t, current);
 }
 
 void gt_exit(int c) {
@@ -202,12 +215,12 @@ static gt_t gt_queue_deq(gt_queue q) {
   return r;
 }
 
-static void gt_queue_enq(gt_queue q, gt_t i) {
-  i->next = NULL;
+static void gt_queue_enq(gt_queue q, gt_t t) {
+  t->next = NULL;
   if (gt_queue_empty(q))
-    q->front = q->back = i;
+    q->front = q->back = t;
   else
-    q->back = q->back->next = i;
+    q->back = q->back->next = t;
 }
 
 // ------------------------------ Ring buffer ----------------------------------
@@ -235,17 +248,20 @@ static void gt_ch_enq(gt_ch c, gt_val v) {
 
 // Create a new channel
 gt_ch gt_chan(void) {
-  // Find unused channel
-  gt_ch c = channels;
-  while (c < channels_end && c->on)
-    ++c;
-  if (c == channels_end) {
-    memset(c, 0, sizeof(struct gt_chan));
-    ++channels_end;
-  }
-  assert(!c->on && "gt_ch_new: clobbering used channel");
-  c->on = true;
+  gt_ch c;
+  if (channels_free) {
+    c = channels_free;
+    channels_free = channels_free->next;
+  } else
+    c = channels_end++;
+  memset(c, 0, sizeof(*c));
   return c;
+}
+
+// Destroy a channel
+void gt_drop(gt_ch c) {
+  c->next = channels_free;
+  channels_free = c;
 }
 
 // The invariant to preserve when reading/writing from channels:
@@ -263,18 +279,19 @@ gt_ch gt_chan(void) {
 gt_val gt_read(gt_ch c) {
   if (!gt_queue_empty(&c->readers) || gt_ch_empty(c)) {
     do {
-      gt_queue_enq(&c->readers, current);
-      current->st = GT_IDLE;
+      gt_t t = gt_t_excise();
+      gt_queue_enq(&c->readers, t);
       debugf("%lu: WAIT gt_read(%lu)\n", current - threads, c - channels);
-      gt_yield();
+      gt_dump();
+      gt_switch(t, current);
     } while (gt_ch_full(c));
   }
   if (!gt_queue_empty(&c->writers))
-    gt_queue_deq(&c->writers)->st = GT_ON;
+    gt_t_insert(gt_queue_deq(&c->writers));
   gt_ch r = gt_ch_deq(c);
   debugf("%lu: gt_read(%lu) = %lu\n", current - threads, c - channels, r - channels);
   gt_dump();
-  return r;
+  return (gt_val)r;
 }
 
 // Writing x to a channel on thread w:
@@ -285,16 +302,17 @@ gt_val gt_read(gt_ch c) {
 void gt_write(gt_ch c, gt_val v) {
   if (!gt_queue_empty(&c->writers) || gt_ch_full(c)) {
     do {
-      gt_queue_enq(&c->writers, current);
-      current->st = GT_IDLE;
+      assert(current != current->next && "gt_write: singleton circle");
+      gt_t t = gt_t_excise();
+      gt_queue_enq(&c->writers, t);
       debugf("%lu: WAIT gt_write(%lu, %lu)\n",
         current - threads, c - channels, v - channels);
       gt_dump();
-      gt_yield();
+      gt_switch(t, current);
     } while (gt_ch_full(c));
   }
   if (!gt_queue_empty(&c->readers))
-    gt_queue_deq(&c->readers)->st = GT_ON;
+    gt_t_insert(gt_queue_deq(&c->readers));
   gt_ch_enq(c, v);
   debugf("%lu: gt_write(%lu, %lu)\n",
     current - threads, c - channels, v - channels);
@@ -302,19 +320,14 @@ void gt_write(gt_ch c, gt_val v) {
 }
 
 void gt_dump(void) {
-  debugs("  threads:");
-  for (size_t i = 0; i < threads_end - threads; ++i) {
-    debugf("    %lu: ", i);
-    switch (threads[i].st) {
-      case GT_ON: debugf("ON"); break;
-      case GT_OFF: debugf("OFF"); break;
-      case GT_IDLE: debugf("IDLE"); break;
-    }
-    debugs(i == current - threads ? " (ACTIVE)" : "");
-  }
-  debugs("  channels:");
+  debugf("  threads (%lu total):\n", threads_end - threads);
+  debugf("    ON: %lu", current - threads);
+  for (gt_t t = current->next; t != current; t = t->next)
+    debugf(" %lu", t - threads);
+  debugs("");
+  debugf("  channels (%lu total):\n", channels_end - channels);
   for (size_t i = 0; i < channels_end - channels; ++i) {
-    debugf("    %lu: %s\n", i, channels[i].on ? "ON" : "OFF");
+    debugf("    %lu: %s\n", i, !channels[i].next ? "ON" : "OFF");
     debugf("      readers: ");
     for (gt_t id = channels[i].readers.front; id; id = id->next)
       debugf("%lu ", id - threads);
