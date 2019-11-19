@@ -14,10 +14,12 @@ const size_t CONSUMER_STACK_SIZE = 0x1000; // printf("%lu ", ...) needs lots of 
 #endif
 
 const size_t PRODUCTIONS = 10;
-const size_t PRODUCERS = 10000;
+const size_t PRODUCERS = 100;
+const size_t CONSUMERS = 10;
 
 size_t n = 0;
 gt_ch ch;
+bool done = false;
 
 void producer(void) {
   for (int i = 0; i < PRODUCTIONS; ++i) {
@@ -32,7 +34,10 @@ void consumer(void) {
     gt_yield();
     ++n;
   }
-  puts("");
+  if (!done) {
+    puts("");
+    done = true;
+  }
 }
 
 int main(void) {
@@ -40,6 +45,7 @@ int main(void) {
   ch = gt_chan();
   for (int i = 0; i < PRODUCERS; ++i)
     gt_go(producer, PRODUCER_STACK_SIZE);
-  gt_go(consumer, CONSUMER_STACK_SIZE);
+  for (int i = 0; i < CONSUMERS; ++i)
+    gt_go(consumer, CONSUMER_STACK_SIZE);
   gt_exit(0);
 }
