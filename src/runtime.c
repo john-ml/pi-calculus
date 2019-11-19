@@ -139,17 +139,6 @@ static void gt_queue_enq(gt_queue q, gt_t t) {
     q->back = q->back->next = t;
 }
 
-// (x::xs, t) => (x::t::xs)
-static void gt_queue_push_(gt_queue q, gt_t t) {
-  if (gt_queue_empty(q)) {
-    t->next = NULL;
-    q->front = q->back = t;
-  } else {
-    t->next = q->front->next;
-    q->front->next = t;
-  }
-}
-
 // ---------------------------------- Threads ----------------------------------
 
 // Stash old context and switch to new
@@ -280,7 +269,7 @@ gt_val gt_read(gt_ch c) {
   }
   gt_ch r = gt_ch_deq(c);
   if (!gt_queue_empty(&c->writers))
-    gt_queue_push_(&threads_on, gt_queue_deq(&c->writers));
+    gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
   debugf("%lu: gt_read(%lu) = %lu\n",
     threads_on.front - threads,
     c - channels,
@@ -299,7 +288,7 @@ void gt_write(gt_ch c, gt_val v) {
   }
   gt_ch_enq(c, v);
   if (!gt_queue_empty(&c->readers))
-    gt_queue_push_(&threads_on, gt_queue_deq(&c->readers));
+    gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
   debugf("%lu: gt_write(%lu, %lu)\n",
     threads_on.front - threads, c - channels, v - channels);
   gt_dump();

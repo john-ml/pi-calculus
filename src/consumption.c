@@ -14,7 +14,7 @@ const size_t CONSUMER_STACK_SIZE = 0x1000; // printf("%lu ", ...) needs lots of 
 #endif
 
 const size_t PRODUCTIONS = 10;
-const size_t PRODUCERS = 10000;
+const size_t PRODUCERS = 10;
 
 size_t n = 0;
 gt_ch ch;
