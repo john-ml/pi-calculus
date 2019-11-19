@@ -1,7 +1,7 @@
 all:
-	gcc -g -Wall counting.c gt_switch.s -o counting
-	gcc -g -Wall consumption.c gt_switch.s -o consumption
+	cd src && gcc -g -Wall counting.c gt_switch.s -o ../bin/counting
+	cd src && gcc -g -Wall consumption.c gt_switch.s -o ../bin/consumption
 
 opt:
-	gcc -g -Wall -O2 counting.c gt_switch.s -o counting
-	gcc -g -Wall -O2 consumption.c gt_switch.s -o consumption
+	cd src && gcc -g -Wall -O2 counting.c gt_switch.s -o ../bin/counting
+	cd src && gcc -g -Wall -O2 consumption.c gt_switch.s -o ../bin/consumption

@@ -6,7 +6,7 @@ static int n = 0;
 void g(void) {
   while (n != 100)
     gt_yield();
-  puts("\n");
+  puts("");
 }
 
 void f(void) {
