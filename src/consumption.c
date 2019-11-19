@@ -14,7 +14,7 @@ const size_t CONSUMER_STACK_SIZE = 0x1000; // printf("%lu ", ...) needs lots of 
 #endif
 
 const size_t PRODUCTIONS = 10;
-const size_t PRODUCERS = 10;
+const size_t PRODUCERS = 10000;
 
 size_t n = 0;
 gt_ch ch;
@@ -22,14 +22,14 @@ gt_ch ch;
 void producer(void) {
   for (int i = 0; i < PRODUCTIONS; ++i) {
     gt_write(ch, ch + i);
-    //gt_yield();
+    gt_yield();
   }
 }
 
 void consumer(void) {
   while (n < PRODUCTIONS * PRODUCERS) {
     printf("%lu ", gt_read(ch) - ch);
-    //gt_yield();
+    gt_yield();
     ++n;
   }
   puts("");

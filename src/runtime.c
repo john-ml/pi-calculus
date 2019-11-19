@@ -1,6 +1,6 @@
 // ---------------------------- Hyperparameters --------------------------------
 
-//#define NDEBUG // asserts
+// #define NDEBUG // asserts
 #define NPRINTFDEBUG // debug logs
 #define GT_CHAN_SIZE 0x10 // size of channel ring buffer
 
@@ -96,6 +96,7 @@ register void *r15 asm ("r15");
 // Thread pool
 static gt_t threads; // &threads[0] is the bootstrap thread
 static gt_t threads_end;
+static gt_t current; // currently executing thread
 static struct gt_queue threads_on = {NULL, NULL}; // ON threads form a queue
 static gt_t threads_free; // OFF threads form a free list
 
@@ -122,8 +123,6 @@ static gt_ch channels_free; // OFF channels form a free list
 
 static bool gt_queue_empty(gt_queue q) { return !q->front; }
 
-static bool gt_queue_sing(gt_queue q) { return q->front && !q->front->next; }
-
 static gt_t gt_queue_deq(gt_queue q) {
   assert(!gt_queue_empty(q) && "gt_queue_deq: dequeueing from empty queue");
   gt_t r = q->front;
@@ -142,13 +141,7 @@ static void gt_queue_enq(gt_queue q, gt_t t) {
 // ---------------------------------- Threads ----------------------------------
 
 // Stash old context and switch to new
-void gt_switch_asm(gt_ctx *old, gt_ctx *new);
-
-// Switch to whatever's in front of the queue
-static void gt_switch_from(gt_ctx *old) {
-  assert(old != threads_on.front);
-  gt_switch_asm(old, threads_on.front);
-}
+void gt_switch_asm(gt_t old, gt_t new);
 
 // Assume result is 8-aligned
 static void *mmalloc(size_t bytes) {
@@ -162,9 +155,8 @@ static void *mmalloc(size_t bytes) {
 void gt_init(void) {
   // mmap 4GB and split the address space in half
   // Lower half for threads...
-  threads = mmalloc(1ull << 32);
-  gt_queue_enq(&threads_on, threads);
-  memset(threads_on.front, 0, sizeof(gt_ctx));
+  threads = current = mmalloc(1ull << 32);
+  memset(current, 0, sizeof(*current));
   threads_end = threads + 1;
   threads_free = NULL;
   // ...and upper half for channels
@@ -189,29 +181,34 @@ void gt_go(void f(void), size_t n) {
   gt_queue_enq(&threads_on, t);
 }
 
-gt_t gt_self(void) { return threads_on.front; }
+gt_t gt_self(void) { return current; }
 
 bool gt_yield(void) {
-  if (gt_queue_sing(&threads_on))
+  if (gt_queue_empty(&threads_on))
     return false;
-  gt_t t = gt_queue_deq(&threads_on);
+  gt_t t = current;
   gt_queue_enq(&threads_on, t);
-  gt_switch_from(t);
+  gt_switch_asm(t, current = gt_queue_deq(&threads_on));
   return true;
 }
 
+void gt_idle(void) {
+  gt_t t = current;
+  gt_switch_asm(t, current = gt_queue_deq(&threads_on));
+}
+
 void gt_stop(void) {
-  assert(!gt_queue_sing(&threads_on) && "gt_stop: singleton circle");
-  gt_t t = gt_queue_deq(&threads_on);
+  assert(!gt_queue_empty(&threads_on) && "gt_stop: empty queue");
+  gt_t t = current;
   t->next = threads_free;
   threads_free = t;
   debugf("%lu: STOP\n", t - threads);
   gt_dump();
-  gt_switch_from(t);
+  gt_switch_asm(t, current = gt_queue_deq(&threads_on));
 }
 
 void gt_exit(int c) {
-  assert(threads_on.front == threads && "gt_exit: called by non-bootstrap thread");
+  assert(current == threads && "gt_exit: called by non-bootstrap thread");
   while (gt_yield())
     ;
   // TODO: What if there are IDLE threads?
@@ -261,17 +258,16 @@ void gt_drop(gt_ch c) {
 
 gt_val gt_read(gt_ch c) {
   while (gt_ch_empty(c)) {
-    gt_t t = gt_queue_deq(&threads_on);
-    gt_queue_enq(&c->readers, t);
-    debugf("%lu: WAIT gt_read(%lu)\n", t - threads, c - channels);
+    gt_queue_enq(&c->readers, current);
+    debugf("%lu: WAIT gt_read(%lu)\n", current - threads, c - channels);
     gt_dump();
-    gt_switch_from(t);
+    gt_idle();
   }
   gt_ch r = gt_ch_deq(c);
   if (!gt_queue_empty(&c->writers))
     gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
   debugf("%lu: gt_read(%lu) = %lu\n",
-    threads_on.front - threads,
+    current - threads,
     c - channels,
     r - channels);
   gt_dump();
@@ -280,25 +276,26 @@ gt_val gt_read(gt_ch c) {
 
 void gt_write(gt_ch c, gt_val v) {
   while (gt_ch_full(c)) {
-    gt_t t = gt_queue_deq(&threads_on);
-    gt_queue_enq(&c->writers, t);
-    debugf("%lu: WAIT gt_write(%lu, %lu)\n", t - threads, c - channels, v - channels);
+    gt_queue_enq(&c->writers, current);
+    debugf("%lu: WAIT gt_write(%lu, %lu)\n",
+      current - threads,
+      c - channels,
+      v - channels);
     gt_dump();
-    gt_switch_from(t);
+    gt_idle();
   }
   gt_ch_enq(c, v);
   if (!gt_queue_empty(&c->readers))
     gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
   debugf("%lu: gt_write(%lu, %lu)\n",
-    threads_on.front - threads, c - channels, v - channels);
+    current - threads, c - channels, v - channels);
   gt_dump();
 }
 
 void gt_dump(void) {
-  gt_t current = threads_on.front;
   debugf("  threads (%lu total):\n", threads_end - threads);
   debugf("    ON: %lu", current - threads);
-  for (gt_t t = current->next; t; t = t->next)
+  for (gt_t t = threads_on.front; t; t = t->next)
     debugf(" %lu", t - threads);
   debugs("");
   debugf("  channels (%lu total):\n", channels_end - channels);
