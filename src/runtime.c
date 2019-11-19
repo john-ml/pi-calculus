@@ -139,6 +139,16 @@ static void gt_queue_enq(gt_queue q, gt_t t) {
     q->back = q->back->next = t;
 }
 
+static void gt_queue_push(gt_queue q, gt_t t) {
+  if (gt_queue_empty(q)) {
+    t->next = NULL;
+    q->front = q->back = t;
+  } else {
+    t->next = q->front;
+    q->front = t;
+  }
+}
+
 // ---------------------------------- Threads ----------------------------------
 
 // Stash old context and switch to new
@@ -256,31 +266,21 @@ void gt_drop(gt_ch c) {
   channels_free = c;
 }
 
-// The invariant to preserve when reading/writing from channels:
-// At any given moment there are some number of ON threads able to read/write
-// from the channel. Suppose there are m threads writing and n threads reading.
-// Then m + n < the capacity of the ring buffer, |ring buffer| >= n, and if
-// both wait queues are nonempty then m + n = the capacity of the ring buffer
-// and |ring buffer| = n.
-
-// Reading from a channel on thread r:
-//   (ws       , xs       , non-empty rs) ~~> (ws, xs, rs ++ [r]), r IDLE
-//   (ws       , []       , []          ) ~~> (ws, [], [r]      ), r IDLE
-//   ([]       , xs ++ [x], []          ) ~~> ([], xs, []       ), cont r(x)
-//   (ws ++ [w], xs ++ [x], []          ) ~~> (ws, xs, []       ), cont r(x), w ON
 gt_val gt_read(gt_ch c) {
-  if (!gt_queue_empty(&c->readers) || gt_ch_empty(c)) {
-    do {
-      gt_t t = gt_queue_deq(&threads_on);
-      gt_queue_enq(&c->readers, t);
-      debugf("%lu: WAIT gt_read(%lu)\n", t - threads, c - channels);
-      gt_dump();
-      gt_switch_from(t);
-    } while (gt_ch_empty(c));
+  while (gt_ch_empty(c)) {
+    gt_t t = gt_queue_deq(&threads_on);
+    gt_queue_enq(&c->readers, t);
+    debugf("%lu: WAIT gt_read(%lu)\n", t - threads, c - channels);
+    gt_dump();
+    gt_switch_from(t);
   }
-  if (!gt_queue_empty(&c->writers))
-    gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
   gt_ch r = gt_ch_deq(c);
+  if (!gt_queue_empty(&c->writers)) {
+    //gt_t t = gt_self();
+    //gt_queue_push(&threads_on, gt_queue_deq(&c->writers));
+    //gt_switch_from(t);
+    gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
+  }
   debugf("%lu: gt_read(%lu) = %lu\n",
     threads_on.front - threads,
     c - channels,
@@ -289,24 +289,21 @@ gt_val gt_read(gt_ch c) {
   return (gt_val)r;
 }
 
-// Writing x to a channel on thread w:
-//   (non-empty ws, xs         , rs       ) ~~> ([w] ++ ws, xs         , rs), w IDLE
-//   ([]          , FULL       , rs       ) ~~> ([w]      , FULL       , rs), w IDLE
-//   ([]          , non-full xs, [r] ++ rs) ~~> ([]       , [x] ++ [xs], rs), r ON, cont w
-//   ([]          , non-full xs, []       ) ~~> ([]       , [x] ++ xs  , []), cont w
 void gt_write(gt_ch c, gt_val v) {
-  if (!gt_queue_empty(&c->writers) || gt_ch_full(c)) {
-    do {
-      gt_t t = gt_queue_deq(&threads_on);
-      gt_queue_enq(&c->writers, t);
-      debugf("%lu: WAIT gt_write(%lu, %lu)\n", t - threads, c - channels, v - channels);
-      gt_dump();
-      gt_switch_from(t);
-    } while (gt_ch_full(c));
+  while (gt_ch_full(c)) {
+    gt_t t = gt_queue_deq(&threads_on);
+    gt_queue_enq(&c->writers, t);
+    debugf("%lu: WAIT gt_write(%lu, %lu)\n", t - threads, c - channels, v - channels);
+    gt_dump();
+    gt_switch_from(t);
   }
-  if (!gt_queue_empty(&c->readers))
-    gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
   gt_ch_enq(c, v);
+  if (!gt_queue_empty(&c->readers)) {
+    //gt_t t = gt_self();
+    //gt_queue_push(&threads_on, gt_queue_deq(&c->readers));
+    //gt_switch_from(t);
+    gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
+  }
   debugf("%lu: gt_write(%lu, %lu)\n",
     threads_on.front - threads, c - channels, v - channels);
   gt_dump();
