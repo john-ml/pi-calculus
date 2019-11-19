@@ -1,12 +1,16 @@
 #include <stdio.h>
 #include "runtime.c"
 
-#ifdef NDEBUG
-const size_t PRODUCER_STACK_SIZE = 0x100;
-const size_t CONSUMER_STACK_SIZE = 0x1000;
+const size_t CONSUMER_STACK_SIZE = 0x1000; // printf("%lu ", ...) needs lots of mem
+
+#ifdef NPRINTFDEBUG
+  #ifdef OPT2_FLAG
+    const size_t PRODUCER_STACK_SIZE = 0x40;
+  #else
+    const size_t PRODUCER_STACK_SIZE = 0x100;
+  #endif
 #else
-const size_t PRODUCER_STACK_SIZE = 0x100000;
-const size_t CONSUMER_STACK_SIZE = 0x100000;
+  const size_t PRODUCER_STACK_SIZE = 0x1000;
 #endif
 
 const size_t PRODUCTIONS = 10;
