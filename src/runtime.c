@@ -149,13 +149,27 @@ static void gt_queue_push(gt_queue q, gt_t t) {
   }
 }
 
+// (x::xs, t) => (x::t::xs)
+static void gt_queue_push_(gt_queue q, gt_t t) {
+  if (gt_queue_empty(q)) {
+    t->next = NULL;
+    q->front = q->back = t;
+  } else {
+    t->next = q->front->next;
+    q->front->next = t;
+  }
+}
+
 // ---------------------------------- Threads ----------------------------------
 
 // Stash old context and switch to new
 void gt_switch_asm(gt_ctx *old, gt_ctx *new);
 
 // Switch to whatever's in front of the queue
-static void gt_switch_from(gt_ctx *old) { gt_switch_asm(old, threads_on.front); }
+static void gt_switch_from(gt_ctx *old) {
+  assert(old != threads_on.front);
+  gt_switch_asm(old, threads_on.front);
+}
 
 // Assume result is 8-aligned
 static void *mmalloc(size_t bytes) {
@@ -276,10 +290,11 @@ gt_val gt_read(gt_ch c) {
   }
   gt_ch r = gt_ch_deq(c);
   if (!gt_queue_empty(&c->writers)) {
+    gt_queue_push_(&threads_on, gt_queue_deq(&c->writers));
     //gt_t t = gt_self();
     //gt_queue_push(&threads_on, gt_queue_deq(&c->writers));
     //gt_switch_from(t);
-    gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
+    //gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
   }
   debugf("%lu: gt_read(%lu) = %lu\n",
     threads_on.front - threads,
@@ -299,10 +314,11 @@ void gt_write(gt_ch c, gt_val v) {
   }
   gt_ch_enq(c, v);
   if (!gt_queue_empty(&c->readers)) {
+    gt_queue_push_(&threads_on, gt_queue_deq(&c->readers));
     //gt_t t = gt_self();
     //gt_queue_push(&threads_on, gt_queue_deq(&c->readers));
     //gt_switch_from(t);
-    gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
+    //gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
   }
   debugf("%lu: gt_write(%lu, %lu)\n",
     threads_on.front - threads, c - channels, v - channels);
