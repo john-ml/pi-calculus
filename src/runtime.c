@@ -2,7 +2,7 @@
 
 //#define NDEBUG // asserts
 #define NPRINTFDEBUG // debug logs
-#define GT_CHAN_SIZE 0x3 // size of channel ring buffer
+#define GT_CHAN_SIZE 0x10 // size of channel ring buffer
 
 // -----------------------------------------------------------------------------
 
@@ -200,6 +200,8 @@ bool gt_yield(void) {
 void gt_stop(void) {
   assert(!gt_queue_sing(&threads_on) && "gt_stop: singleton circle");
   gt_t t = gt_queue_deq(&threads_on);
+  t->next = threads_free;
+  threads_free = t;
   debugf("%lu: STOP\n", t - threads);
   gt_dump();
   gt_switch_from(t);
