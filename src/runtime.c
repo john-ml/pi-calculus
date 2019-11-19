@@ -1,6 +1,6 @@
 // ---------------------------- Hyperparameters --------------------------------
 
-#define NDEBUG // asserts
+//#define NDEBUG // asserts
 #define NPRINTFDEBUG // debug logs
 #define GT_CHAN_SIZE 0x3 // size of channel ring buffer
 
@@ -199,7 +199,10 @@ bool gt_yield(void) {
 
 void gt_stop(void) {
   assert(!gt_queue_sing(&threads_on) && "gt_stop: singleton circle");
-  gt_switch_from(gt_queue_deq(&threads_on));
+  gt_t t = gt_queue_deq(&threads_on);
+  debugf("%lu: STOP\n", t - threads);
+  gt_dump();
+  gt_switch_from(t);
 }
 
 void gt_exit(int c) {
@@ -271,7 +274,7 @@ gt_val gt_read(gt_ch c) {
       debugf("%lu: WAIT gt_read(%lu)\n", t - threads, c - channels);
       gt_dump();
       gt_switch_from(t);
-    } while (gt_ch_full(c));
+    } while (gt_ch_empty(c));
   }
   if (!gt_queue_empty(&c->writers))
     gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
@@ -294,8 +297,7 @@ void gt_write(gt_ch c, gt_val v) {
     do {
       gt_t t = gt_queue_deq(&threads_on);
       gt_queue_enq(&c->writers, t);
-      debugf("%lu: WAIT gt_write(%lu, %lu)\n",
-        threads_on.front - threads, c - channels, v - channels);
+      debugf("%lu: WAIT gt_write(%lu, %lu)\n", t - threads, c - channels, v - channels);
       gt_dump();
       gt_switch_from(t);
     } while (gt_ch_full(c));

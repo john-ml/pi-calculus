@@ -22,14 +22,14 @@ gt_ch ch;
 void producer(void) {
   for (int i = 0; i < PRODUCTIONS; ++i) {
     gt_write(ch, ch + i);
-    gt_yield();
+    //gt_yield();
   }
 }
 
 void consumer(void) {
   while (n < PRODUCTIONS * PRODUCERS) {
     printf("%lu ", gt_read(ch) - ch);
-    gt_yield();
+    //gt_yield();
     ++n;
   }
   puts("");
