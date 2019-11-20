@@ -1,0 +1,23 @@
+IO/primitives
+- No types for now (many complications!)
+- u64, u64 math, "math" works on u64 as well as channels
+- IO can be done with channels that read/write u64
+  - e.g. cat = !stdin(c).stdout<c>.0
+    - send/recv never inspect the values so it's fine
+    - stdin/stdout will correctly format their results/inputs
+
+Compilation
+- FV for liveness analysis
+- Register allocation using global register variables
+- Spill into C locals
+- gt_go_alloca(void f(void), size_t m, size_t n)
+  - Use to pass spilled free variables on to forked processes
+  - Max stack size n
+  - Local stack size m for initial stack frame of f i.e. initial stack is
+      &f
+      .
+      .   m bytes
+      .
+      &gt_stop
+  - f must (sub $m, %rsp) before ret
+
