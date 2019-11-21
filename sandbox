@@ -19,7 +19,7 @@ Compilation
       .   m bytes
       .
       &gt_stop
-  - f must (sub $m, %rsp) before ret
+  - f must (add $m, %rsp) before ret
 
 Liveness
 - Before using FV as liveness function, want to make it a bit more precise
@@ -40,6 +40,65 @@ Liveness
 - In some cases, new x, loop P ~~> loop new x, P
   - Depends if new x, P can rewrite to something a lot more favorable
 
-Register allocation for P with variables x1 .. xn onto Registers
-- For each subprocess P' of P, add constraint: distinct FV(P')
-- Solve: constraints /\ (x1 in Registers /\ .. /\ xn in Registers)
+Register allocation 
+- Slightly different from usual allocation, because the cost of spilling is different.
+- "Spilling" just means the variable becomes a C variable instead of a global register
+  variable. So a spilled variable will probably still get put into a register and doesn't
+  necessarily cost more to work with.
+- The cost of spilled variables is that they have to be manually shuttled across forks:
+  - e.g. suppose {x spills, y in rbx} in new x, P | send x to y
+  - Then this compiles to
+      void f(void) {
+        void *rsp = gt_self()->rsp;
+        send(rbx, ((gt_t *)rsp)[0]);
+        asm("add 16, %%rsp\t\n" : : : "rsp");
+      }
+           .
+           .
+           .
+      gt_ch x = gt_chan();
+      gt_t q = gt_go_alloca(f, 16, MAX_STACK_SIZE);
+      q->rsp[-1] = x; // spilled x
+      q->rbx = rbx;
+      rest of P
+  - Now suppose {x in r12, y in rbx} in new x, P | send x to y
+  - Then this compiles to
+      void f(void) { send(rbx, r12); }
+           .
+           .
+           .
+      rbx = gt_chan();
+      gt_go(f, MAX_STACK_SIZE);
+      q->rbx = rbx;
+      q->r12 = r12;
+      rest of P
+
+Register allocation for P with variables x₁ .. xₙ
+- Registers R represented as natural numbers
+- Sort x₁ .. xₙ in increasing order of spillability to get y₁ .. yₙ
+- Find largest i s.t. F(i) SAT and assign y₁ .. yᵢ accordingly, where
+  - F(i) = C ∧ /\ y ∈ R for y in y₁ .. yᵢ
+  - C = /\ distinct(FV(P')) for each subprocess P' of P
+- Find smallest j s.t. G(j) SAT and assign yᵢ₊₁ .. yₙ accordingly, where
+  - G(j) = C ∧ /\ y ∈ {1 .. j} for y in yᵢ₊₁ .. yₙ
+
+Computing spillability of a variable x if there are no loops or matches:
+- Spillability is just 0 - the expected number of forks that happen in x's lifetime
+- forks(x, 0)
+  || forks(x, "new _, P")
+  || forks(x, "read _ from _, P")
+  || forks(x, "send _ to _, P") = forks(x, P)
+- forks(x, P | Q) = (x in FV(Q)) + forks(x, P) + forks(x, Q)
+- forks(x, P + Q) = 1/2 forks(x, P) + 1/2 forks(x, Q)
+
+Spillability of x if there are loops (but not matches):
+- Loops "run forever" but could technically "wait forever" because reads/writes wait
+- For now, simple heuristic: forks(x, loop P) = k * forks(x, P) for some big k
+  - Assume loops fork much more than non-loops
+  - Assume n > m ==> loop with n forks always worse loop with m forks
+
+Spillability of x if there are matches:
+- Unlike (+), matches probably won't choose subprocesses uniformly at random
+- For now, simple heuristic:
+  - forks(x, match y {_ -> P₁; ..; _ -> Pₙ}) = max forks(x, Pᵢ) for i in {1 .. n}
+  - Always assume the worst
