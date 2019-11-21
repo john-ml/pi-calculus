@@ -21,3 +21,25 @@ Compilation
       &gt_stop
   - f must (sub $m, %rsp) before ret
 
+Liveness
+- Before using FV as liveness function, want to make it a bit more precise
+  - e.g. new x, new y, send x to z, send y to z, halt
+    - FV(send x to z, send y to z, halt) = {x, y, z} ==> x, y, z interfere with each other
+    - But ideally, x and y should get the same register
+- Solution: float new down to the most precise location
+  - x not in FV(P) ==> new x, P ~~> P ("dead variable elimination")
+  - new x, new y, P ~~> new y, new x, P
+  - x not in {y, z} ==> new x, send y to z, P ~~> send y to z, new x, P
+  - x != z ==> new x, read y from z, P ~~> read y from z, new x, P (x != y by UB)
+  - x not in FV(P) ==> new x, P | Q ~~> P | (new x, Q)
+  - x not in FV(Q) ==> new x, P | Q ~~> (new x, P) | Q
+  - new x, P + Q ~~> (new x, P) + (new x, Q)
+  - x not in {y, z1, .., zn} ==>
+    new x, match y {z1 -> P1; ..; zn -> Pn} ~~>
+    match y {z1 -> new x, P1; ..; zn -> new x, Pn}
+- In some cases, new x, loop P ~~> loop new x, P
+  - Depends if new x, P can rewrite to something a lot more favorable
+
+Register allocation for P with variables x1 .. xn onto Registers
+- For each subprocess P' of P, add constraint: distinct FV(P')
+- Solve: constraints /\ (x1 in Registers /\ .. /\ xn in Registers)
