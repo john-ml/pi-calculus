@@ -5,12 +5,15 @@ import Data.Set (Set, (\\)); import qualified Data.Set as S
 import Data.Map (Map); import qualified Data.Map as M
 import Data.Semigroup
 import qualified Data.Foldable as F
+import Data.Functor
 import Data.Functor.Foldable
 import Data.Functor.Foldable.TH
 import Data.Functor.Classes
 import Data.Functor.Compose
 import Control.Monad.State
+import Control.Monad.Writer.Strict
 import Control.Applicative
+import Text.Show.Deriving
 
 import Data.SBV
 
@@ -28,6 +31,7 @@ data Process
   deriving (Eq, Ord, Show)
 
 makeBaseFunctor ''Process
+deriveShow1 ''ProcessF
 
 pattern Match' x ys zs <- Match x (L.unzip -> (ys, zs))
 
@@ -118,21 +122,35 @@ fvAnno = anno fvF
 (∉) :: Ord a => a -> Set a -> Bool
 (∉) = S.notMember
 
--- New sinking
-sinkNews :: FVProcess -> FVProcess
-sinkNews = cata $ \case
-  AnnoF vs (NewF x (Anno ws p)) | x ∉ ws -> Anno vs p
-  AnnoF vs (NewF x (ANew ws y p)) -> ANew vs y (ANew ws x p)
-  AnnoF vs (NewF x (ASend _ s d p)) | x /= s && x /= d -> ASend vs s d (ANew vs x p)
-  AnnoF vs (NewF x (ARecv _ d s p)) | x /= s && x /= d -> ARecv vs s d (ANew vs x p)
-  AnnoF vs (NewF x (ABoth ws p@(Anno xs _) q)) | x ∉ xs -> ABoth vs p (ANew vs x q)
-  AnnoF vs (NewF x (ABoth ws p q@(Anno xs _))) | x ∉ xs -> ABoth vs (ANew vs x p) q
-  AnnoF vs (NewF x (AEither ws p q)) -> AEither vs (ANew vs x p) (ANew vs x q)
-  -- NewF x (p :+: q) -> New x p :|: New x q
-  -- NewF x (Match' y zs ps) | x /= y && x `L.notElem` zs -> Match y (zip zs (New x <$> ps))
-  -- p -> embed p
+-- Fixed point computation
+fixed :: (a -> Writer Any a) -> a -> a
+fixed f x = if p then fixed f y else y where (y, Any p) = runWriter (f x)
 
 -- -------------------- From here on, assume UB --------------------
+
+-- New sinking
+sinkNews :: FVProcess -> FVProcess
+sinkNews = fixed . fix $ \ go -> \case
+  ANew vs x (Anno ws p) | x ∉ ws -> go (Anno vs p)
+  ANew vs x (ANew _ y p@(Anno ws _)) ->
+    ANew vs y <$> do tick; go . ANew (ws \\ x) x =<< go p
+  ANew vs x (ASend _ s d p@(Anno ws _)) | x /= s && x /= d ->
+    ASend vs s d <$> do tick; go . ANew (ws \\ x) x =<< go p
+  ANew vs x (ARecv _ d s p@(Anno ws _)) | x /= s ->
+    ARecv vs s d <$> do tick; go . ANew (ws \\ x) x =<< go p
+  ANew vs x (ABoth _ p@(Anno ps _) q@(Anno qs _)) | x ∉ ps ->
+    do tick; ABoth vs <$> go p <*> (go . ANew (qs \\ x) x =<< go q)
+  ANew vs x (ABoth _ p@(Anno ps _) q@(Anno qs _)) | x ∉ qs ->
+    do tick; ABoth vs <$> (go . ANew (ps \\ x) x =<< go p) <*> go q
+  ANew vs x (AEither ws p@(Anno ps _) q@(Anno qs _)) ->
+    do tick; AEither vs <$> (go . ANew (ps \\ x) x =<< go p) <*> (go . ANew (qs \\ x) x =<< go q)
+  ANew vs x (AMatch _ y arms) | x `L.notElem` (y : map fst arms) ->
+    do tick; AMatch vs y <$> mapM (mapM (\ p@(Anno ps _) -> go . ANew (ps \\ x) x =<< go p)) arms <* tick
+  p -> tell (Any False) $> p
+  where
+    tick = tell (Any True)
+    ret x = tick $> x
+    s \\ x = S.delete x s
 
 -- Expected number of forks that happen in a variable's lifetime
 forks :: Var -> Process -> Double
