@@ -3,4 +3,5 @@
 *.cabal
 .stack-work
 bin
+dist
 out

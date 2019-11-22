@@ -1,13 +1,14 @@
 module Process where
 
 import Data.Fix
-import Data.Bifunctor
 import qualified Data.List as L
 import Data.Set (Set, (\\)); import qualified Data.Set as S
 import Data.Map (Map); import qualified Data.Map as M
 import Data.Semigroup
 import Control.Monad.State
 import Control.Applicative
+
+import Data.SBV
 
 type Var = Int
 
@@ -98,6 +99,8 @@ sinkNews = cata $ \case
   NewF x (Match' y zs ps) | x /= y && x `L.notElem` zs -> Match y (zip zs (New x <$> ps))
   p -> Fix p
 
+-- -------------------- From here on, we assume UB --------------------
+
 -- Expected number of forks that happen in a variable's lifetime
 forks :: Var -> Process -> Double
 forks x = \case
@@ -110,7 +113,7 @@ forks x = \case
   Loop p -> 100 * forks x p
   Match' _ _ ps -> maximum (0 : (forks x <$> ps))
 
--- The variables in a process, sorted by forks. Assumes UB
+-- The variables in a process, sorted by forks
 sortedVars :: Process -> [Var]
 sortedVars p = L.sortOn (`forks` p) (S.toList (uv p))
 
