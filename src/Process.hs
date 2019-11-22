@@ -35,8 +35,56 @@ deriveShow1 ''ProcessF
 
 pattern Match' x ys zs <- Match x (L.unzip -> (ys, zs))
 
+-- -------------------- Utils --------------------
+
 (∪) :: Ord a => Set a -> Set a -> Set a
 (∪) = S.union
+
+(∈) :: Ord a => a -> Set a -> Bool
+(∈) = S.member
+
+(∉) :: Ord a => a -> Set a -> Bool
+(∉) = S.notMember
+
+-- Fixed point computation
+fixed :: (a -> Writer Any a) -> a -> a
+fixed f x = if p then fixed f y else y where (y, Any p) = runWriter (f x)
+
+-- -------------------- Annotate every subprocess with some value --------------------
+
+type AnnoF a f = Compose ((,) a) f
+pattern AnnoF t p = Compose (t, p)
+pattern Anno t p = Fix (Compose (t, p))
+
+anno :: (Base Process a -> a) -> Process -> Fix (AnnoF a (Base Process))
+anno f = cata $ \ p ->
+  let ann x = Anno x p in
+  case p of
+    HaltF -> ann (f HaltF)
+    NewF x (Anno a _) -> ann (f (NewF x a))
+    SendF s d (Anno a _) -> ann (f (SendF s d a))
+    RecvF d s (Anno a _) -> ann (f (RecvF d s a))
+    Anno a _ :|:$ Anno b _ -> ann (f (a :|:$ b))
+    Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
+    LoopF (Anno a _) -> ann (f (LoopF a))
+    MatchF x arms -> ann (f (MatchF x (map (\ (y, Anno a _) -> (y, a)) arms)))
+
+unanno :: Fix (AnnoF a (Base Process)) -> Process
+unanno = hoist (snd . getCompose)
+
+-- Label every node
+type AProcess a = Fix (AnnoF a (Base Process))
+pattern AHalt a = Anno a HaltF
+pattern ANew a x p = Anno a (NewF x p)
+pattern ASend a s d p = Anno a (SendF s d p)
+pattern ARecv a d s p = Anno a (RecvF d s p)
+pattern ABoth a p q = Anno a (p :|:$ q)
+pattern APick a p q = Anno a (p :+:$ q)
+pattern ALoop a p = Anno a (LoopF p)
+pattern AMatch a x arms = Anno a (MatchF x arms)
+pattern AMatch' a x ys ps <- Anno a (MatchF x (L.unzip -> (ys, ps)))
+
+-- -------------------- Variables --------------------
 
 -- Generic fold over variables
 foldVars :: Monoid m => (Var -> m) -> Process -> m
@@ -64,35 +112,14 @@ ub p = go M.empty p `evalState` maxUsed p where
   go σ = \case
     Halt -> return Halt
     New x p -> do x' <- gen; New x' <$> go (M.insert x x' σ) p
-    Send s d p -> Send (app σ s) (app σ d) <$> go σ p
-    Recv d s p -> do d' <- gen; Recv d' (app σ s) <$> go (M.insert d d' σ) p
+    Send s d p -> Send (σ ! s) (σ ! d) <$> go σ p
+    Recv d s p -> do d' <- gen; Recv d' (σ ! s) <$> go (M.insert d d' σ) p
     p :|: q -> liftA2 (:|:) (go σ p) (go σ q)
     p :+: q -> liftA2 (:+:) (go σ p) (go σ q)
     Loop p -> Loop <$> go σ p
     Match x yps -> Match x <$> traverse (traverse (go σ)) yps
-  app σ x = M.findWithDefault x x σ
+  σ ! x = M.findWithDefault x x σ
   gen = modify' succ *> get
-
--- Annotate every subprocess with some value
-type AnnoF a f = Compose ((,) a) f
-pattern AnnoF t p = Compose (t, p)
-pattern Anno t p = Fix (Compose (t, p))
-
-anno :: (Base Process a -> a) -> Process -> Fix (AnnoF a (Base Process))
-anno f = cata $ \ p ->
-  let ann x = Anno x p in
-  case p of
-    HaltF -> ann (f HaltF)
-    NewF x (Anno a _) -> ann (f (NewF x a))
-    SendF s d (Anno a _) -> ann (f (SendF s d a))
-    RecvF d s (Anno a _) -> ann (f (RecvF d s a))
-    Anno a _ :|:$ Anno b _ -> ann (f (a :|:$ b))
-    Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
-    LoopF (Anno a _) -> ann (f (LoopF a))
-    MatchF x arms -> ann (f (MatchF x (map (\ (y, Anno a _) -> (y, a)) arms)))
-
-unanno :: Fix (AnnoF a (Base Process)) -> Process
-unanno = hoist (snd . getCompose)
 
 -- Free variables
 fvF :: Base Process (Set Var) -> Set Var
@@ -109,74 +136,37 @@ fvF = \case
 fv :: Process -> Set Var
 fv = cata fvF
 
--- Label every node with free variables
-type FVProcess = Fix (AnnoF (Set Var) (Base Process))
-pattern AHalt vs = Anno vs HaltF
-pattern ANew vs x p = Anno vs (NewF x p)
-pattern ASend vs s d p = Anno vs (SendF s d p)
-pattern ARecv vs d s p = Anno vs (RecvF d s p)
-pattern ABoth vs p q = Anno vs (p :|:$ q)
-pattern AEither vs p q = Anno vs (p :+:$ q)
-pattern ALoop vs p = Anno vs (LoopF p)
-pattern AMatch vs x arms = Anno vs (MatchF x arms)
+-- -------------------- Liveness (from here on, assume UB) --------------------
+
+type FVProcess = AProcess (Set Var)
+pattern FV ws p <- ((\ p -> (p, p)) -> (p, Anno ws _))
 
 fvAnno :: Process -> FVProcess
 fvAnno = anno fvF
 
-(∉) :: Ord a => a -> Set a -> Bool
-(∉) = S.notMember
-
--- Fixed point computation
-fixed :: (a -> Writer Any a) -> a -> a
-fixed f x = if p then fixed f y else y where (y, Any p) = runWriter (f x)
-
--- -------------------- From here on, assume UB --------------------
-
 -- New sinking
 sinkNews :: FVProcess -> FVProcess
-sinkNews = fixed . fix $ \ go -> \case
-  ANew vs x (Anno ws p) | x ∉ ws -> go (Anno vs p)
-  ANew vs x (ANew _ y p@(Anno ws _)) ->
-    ANew vs y <$> do tick; go . ANew (ws \\ x) x =<< go p
-  ANew vs x (ASend _ s d p@(Anno ws _)) | x /= s && x /= d ->
-    ASend vs s d <$> do tick; go . ANew (ws \\ x) x =<< go p
-  ANew vs x (ARecv _ d s p@(Anno ws _)) | x /= s ->
-    ARecv vs s d <$> do tick; go . ANew (ws \\ x) x =<< go p
-  ANew vs x (ABoth _ p@(Anno ps _) q@(Anno qs _)) | x ∉ ps ->
-    do tick; ABoth vs <$> go p <*> (go . ANew (qs \\ x) x =<< go q)
-  ANew vs x (ABoth _ p@(Anno ps _) q@(Anno qs _)) | x ∉ qs ->
-    do tick; ABoth vs <$> (go . ANew (ps \\ x) x =<< go p) <*> go q
-  ANew vs x (AEither ws p@(Anno ps _) q@(Anno qs _)) ->
-    do tick; AEither vs <$> (go . ANew (ps \\ x) x =<< go p) <*> (go . ANew (qs \\ x) x =<< go q)
-  ANew vs x (AMatch _ y arms) | x `L.notElem` (y : map fst arms) ->
-    do tick; AMatch vs y <$> mapM (mapM (\ p@(Anno ps _) -> go . ANew (ps \\ x) x =<< go p)) arms <* tick
-  p -> tell (Any False) $> p
-  where
-    tick = tell (Any True)
-    ret x = tick $> x
-    s \\ x = S.delete x s
+sinkNews = fixed . fix $ \ go ->
+  let rec x ps p = do tell (Any True); go . ANew (S.delete x ps) x =<< go p in
+  \case
+    ANew vs x (Anno ps p) | x ∉ ps -> go (Anno vs p)
+    ANew vs x (ANew _ y (FV ps p)) -> ANew vs y <$> rec x ps p
+    ANew vs x (ASend _ s d (FV ps p)) | x /= s && x /= d -> ASend vs s d <$> rec x ps p
+    ANew vs x (ARecv _ d s (FV ps p)) | x /= s -> ARecv vs s d <$> rec x ps p
+    ANew vs x (ABoth _ (FV ps p) (FV qs q)) | x ∉ ps -> ABoth vs <$> go p <*> rec x qs q
+    ANew vs x (ABoth _ (FV ps p) (FV qs q)) | x ∉ qs -> ABoth vs <$> rec x ps p <*> go q
+    ANew vs x (APick ws (FV ps p) (FV qs q)) -> APick vs <$> rec x ps p <*> rec x qs q
+    ANew vs x (AMatch _ y arms) | x `L.notElem` (y : map fst arms) ->
+      AMatch vs y <$> mapM (mapM (\ (FV ps p) -> rec x ps p)) arms
+    p -> tell (Any False) $> p
 
--- Expected number of forks that happen in a variable's lifetime
-forks :: Var -> Process -> Double
-forks x = \case
-  Halt -> 0
-  New _ p -> forks x p
-  Send _ _ p -> forks x p
-  Recv _ _ p -> forks x p
-  p :|: q -> (if x `S.member` fv q then 1 else 0) + forks x p + forks x q
-  p :+: q -> forks x p / 2 + forks x q / 2
-  Loop p -> 100 * forks x p
-  Match' _ _ ps -> maximum (0 : (forks x <$> ps))
-
--- The variables in a process, sorted by forks
-sortedVars :: Process -> [Var]
-sortedVars p = L.sortOn (`forks` p) (S.toList (uv p))
+-- -------------------- Register allocation --------------------
 
 -- Interference constraint
-type Constraint = (Var, Var)
+data Constraint = Var :/=: Var deriving (Eq, Ord, Show)
 
 clique :: Set Var -> Set Constraint
-clique xs = S.fromList [(x, y) | x:ys <- L.tails (S.toList xs), y <- ys]
+clique xs = S.fromList [x :/=: y | x : ys <- L.tails (S.toList xs), y <- ys]
 
 -- Collect interference constraints
 constraints :: FVProcess -> Set Constraint
@@ -189,3 +179,37 @@ constraints = fold $ \case
   AnnoF (clique -> vs) (ps :+:$ qs) -> vs ∪ ps ∪ qs
   AnnoF (clique -> vs) (LoopF ps) -> vs ∪ ps
   AnnoF (clique -> vs) (MatchF _ (map snd -> ps)) -> vs ∪ F.fold ps
+
+-- Expected number of forks that happen in a variable's lifetime
+forks :: Var -> FVProcess -> Double
+forks x = \case
+  AHalt _ -> 0
+  ANew _ _ p -> forks x p
+  ASend _ _ _ p -> forks x p
+  ARecv _ _ _ p -> forks x p
+  ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + forks x p + forks x q
+  APick _ p q -> forks x p / 2 + forks x q / 2
+  ALoop _ p -> 100 * forks x p
+  AMatch' _ _ _ ps -> maximum (0 : map (forks x) ps)
+
+-- The variables in a process, sorted by forks
+sortedVars :: FVProcess -> [Var]
+sortedVars p = L.sortOn (`forks` p) (S.toList (uv (unanno p)))
+
+varName :: Var -> String
+varName x = "x" ++ show x
+
+type Register = Int
+
+registers :: [Register]
+registers = [0, 1, 2, 3, 4]
+
+regName :: Register -> String
+regName = \case
+  0 -> "rbx"
+  1 -> "r12"
+  2 -> "r13"
+  3 -> "r14"
+  4 -> "r15"
+  n -> "spill" ++ show n
+
