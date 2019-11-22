@@ -1,10 +1,14 @@
 module Process where
 
-import Data.Fix
 import qualified Data.List as L
 import Data.Set (Set, (\\)); import qualified Data.Set as S
 import Data.Map (Map); import qualified Data.Map as M
 import Data.Semigroup
+import qualified Data.Foldable as F
+import Data.Functor.Foldable
+import Data.Functor.Foldable.TH
+import Data.Functor.Classes
+import Data.Functor.Compose
 import Control.Monad.State
 import Control.Applicative
 
@@ -12,44 +16,23 @@ import Data.SBV
 
 type Var = Int
 
-data ProcessF a
-  = HaltF
-  | NewF Var a
-  | SendF Var Var a
-  | RecvF Var Var a
-  | BothF a a
-  | EitherF a a
-  | LoopF a
-  | MatchF Var [(Var, a)]
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+data Process
+  = Halt
+  | New Var Process
+  | Send Var Var Process
+  | Recv Var Var Process
+  | Process :|: Process
+  | Process :+: Process
+  | Loop Process
+  | Match Var [(Var, Process)]
+  deriving (Eq, Ord, Show)
 
-type Process = Fix ProcessF
-pattern Halt = Fix HaltF
-pattern New x p = Fix (NewF x p)
-pattern Send src dst p = Fix (SendF src dst p)
-pattern Recv dst src p = Fix (RecvF dst src p)
-pattern p :|: q = Fix (BothF p q)
-pattern p :+: q = Fix (EitherF p q)
-pattern Loop p = Fix (LoopF p)
-pattern Match x arms = Fix (MatchF x arms)
-pattern Match' x ys ps <- Fix (MatchF x (L.unzip -> (ys, ps)))
-{-# COMPLETE Halt, New, Send, Recv, (:|:), (:+:), Match, Loop #-}
-{-# COMPLETE Halt, New, Send, Recv, (:|:), (:+:), Match', Loop #-}
+makeBaseFunctor ''Process
+
+pattern Match' x ys zs <- Match x (L.unzip -> (ys, zs))
 
 (∪) :: Ord a => Set a -> Set a -> Set a
 (∪) = S.union
-
--- Free variables
-fv :: Process -> Set Var
-fv = \case
-  Halt -> S.empty
-  New x p -> S.delete x (fv p)
-  Send src dst p -> S.fromList [src, dst] ∪ fv p
-  Recv dst src p -> S.insert src (S.delete dst (fv p))
-  p :|: q -> fv p ∪ fv q
-  p :+: q -> fv p ∪ fv q
-  Loop p -> fv p
-  Match x (L.unzip -> (xs, ps)) -> S.fromList (x : xs) ∪ foldMap fv ps
 
 -- Generic fold over variables
 foldVars :: Monoid m => (Var -> m) -> Process -> m
@@ -58,8 +41,8 @@ foldVars m = cata $ \case
   NewF x my -> m x <> my
   SendF x y mz -> m x <> m y <> mz
   RecvF x y mz -> m x <> m y <> mz
-  BothF mx my -> mx <> my
-  EitherF mx my -> mx <> my
+  mx :|:$ my -> mx <> my
+  mx :+:$ my -> mx <> my
   LoopF mx -> mx
   MatchF x (L.unzip -> (ys, mzs)) -> mconcat (m x : map m ys ++ mzs)
 
@@ -86,20 +69,70 @@ ub p = go M.empty p `evalState` maxUsed p where
   app σ x = M.findWithDefault x x σ
   gen = modify' succ *> get
 
--- New sinking
-sinkNews :: Process -> Process
-sinkNews = cata $ \case
-  NewF x p | x `S.notMember` fv p -> p
-  NewF x (New y p) -> New y (New x p)
-  NewF x (Send s d p) | x /= s && x /= d -> Send s d (New x p)
-  NewF x (Recv d s p) | x /= s && x /= d -> Recv d s (New x p)
-  NewF x (p :|: q) | x `S.notMember` fv p -> p :|: New x q
-  NewF x (p :|: q) | x `S.notMember` fv q -> New x p :|: q
-  NewF x (p :+: q) -> New x p :|: New x q
-  NewF x (Match' y zs ps) | x /= y && x `L.notElem` zs -> Match y (zip zs (New x <$> ps))
-  p -> Fix p
+-- Annotate every subprocess with some value
+type AnnoF a f = Compose ((,) a) f
+pattern AnnoF t p = Compose (t, p)
+pattern Anno t p = Fix (Compose (t, p))
+anno :: (Base Process a -> a) -> Process -> Fix (AnnoF a (Base Process))
+anno f = cata $ \ p ->
+  let ann x = Anno x p in
+  case p of
+    HaltF -> ann (f HaltF)
+    NewF x (Anno a _) -> ann (f (NewF x a))
+    SendF s d (Anno a _) -> ann (f (SendF s d a))
+    RecvF d s (Anno a _) -> ann (f (RecvF d s a))
+    Anno a _ :|:$ Anno b _ -> ann (f (a :|:$ b))
+    Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
+    LoopF (Anno a _) -> ann (f (LoopF a))
+    MatchF x arms -> ann (f (MatchF x (map (\ (y, Anno a _) -> (y, a)) arms)))
 
--- -------------------- From here on, we assume UB --------------------
+-- Free variables
+fvF :: Base Process (Set Var) -> Set Var
+fvF = \case
+  HaltF -> S.empty
+  NewF x vs -> S.delete x vs
+  SendF s d vs -> S.insert s (S.insert d vs)
+  RecvF d s vs -> S.insert s (S.delete d vs)
+  vs :|:$ ws -> vs ∪ ws
+  vs :+:$ ws -> vs ∪ ws
+  LoopF vs -> vs
+  MatchF x (L.unzip -> (xs, vss)) -> S.fromList (x : xs) ∪ F.fold vss
+
+fv :: Process -> Set Var
+fv = cata fvF
+
+-- Label every node with free variables
+type FVProcess = Fix (AnnoF (Set Var) (Base Process))
+pattern AHalt vs = Anno vs HaltF
+pattern ANew vs x p = Anno vs (NewF x p)
+pattern ASend vs s d p = Anno vs (SendF s d p)
+pattern ARecv vs d s p = Anno vs (RecvF d s p)
+pattern ABoth vs p q = Anno vs (p :|:$ q)
+pattern AEither vs p q = Anno vs (p :+:$ q)
+pattern ALoop vs p = Anno vs (LoopF p)
+pattern AMatch vs x arms = Anno vs (MatchF x arms)
+
+fvAnno :: Process -> FVProcess
+fvAnno = anno fvF
+
+(∉) :: Ord a => a -> Set a -> Bool
+(∉) = S.notMember
+
+-- New sinking
+sinkNews :: FVProcess -> FVProcess
+sinkNews = cata $ \case
+  AnnoF vs (NewF x (Anno ws p)) | x ∉ ws -> Anno vs p
+  AnnoF vs (NewF x (ANew ws y p)) -> ANew vs y (ANew ws x p)
+  AnnoF vs (NewF x (ASend _ s d p)) | x /= s && x /= d -> ASend vs s d (ANew vs x p)
+  AnnoF vs (NewF x (ARecv _ d s p)) | x /= s && x /= d -> ARecv vs s d (ANew vs x p)
+  AnnoF vs (NewF x (ABoth ws p@(Anno xs _) q)) | x ∉ xs -> ABoth vs p (ANew vs x q)
+  AnnoF vs (NewF x (ABoth ws p q@(Anno xs _))) | x ∉ xs -> ABoth vs (ANew vs x p) q
+  AnnoF vs (NewF x (AEither ws p q)) -> AEither vs (ANew vs x p) (ANew vs x q)
+  -- NewF x (p :+: q) -> New x p :|: New x q
+  -- NewF x (Match' y zs ps) | x /= y && x `L.notElem` zs -> Match y (zip zs (New x <$> ps))
+  -- p -> embed p
+
+-- -------------------- From here on, assume UB --------------------
 
 -- Expected number of forks that happen in a variable's lifetime
 forks :: Var -> Process -> Double
