@@ -35,6 +35,7 @@ pattern Match' x ys ps <- Fix (MatchF x (L.unzip -> (ys, ps)))
 {-# COMPLETE Halt, New, Send, Recv, (:|:), (:+:), Match, Loop #-}
 {-# COMPLETE Halt, New, Send, Recv, (:|:), (:+:), Match', Loop #-}
 
+(∪) :: Ord a => Set a -> Set a -> Set a
 (∪) = S.union
 
 -- Free variables
@@ -108,3 +109,22 @@ forks x = \case
   p :+: q -> forks x p / 2 + forks x q / 2
   Loop p -> 100 * forks x p
   Match' _ _ ps -> maximum (0 : (forks x <$> ps))
+
+-- The variables in a process, sorted by forks. Assumes UB
+sortedVars :: Process -> [Var]
+sortedVars p = L.sortOn (`forks` p) (S.toList (uv p))
+
+-- Interference constraint
+type Constraint = Set Var
+
+-- Collect interference constraints
+constraints :: Process -> Set Constraint
+constraints p = fv p `S.insert` case p of
+  Halt -> S.empty
+  New _ p -> constraints p
+  Send _ _ p -> constraints p
+  Recv _ _ p -> constraints p
+  p :|: q -> constraints p ∪ constraints q
+  p :+: q -> constraints p ∪ constraints q
+  Loop p -> constraints p
+  Match' _ _ ps -> foldMap constraints ps
