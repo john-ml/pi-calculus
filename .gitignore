@@ -1,2 +1,6 @@
 *.swp
 *.swo
+*.cabal
+.stack-work
+bin
+out

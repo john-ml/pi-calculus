@@ -1,6 +1,6 @@
 IO/primitives
 - No types for now (many complications!)
-- u64, u64 math, "math" works on u64 as well as channels
+- u64, u64 math, "match" works on u64 as well as channels
 - IO can be done with channels that read/write u64
   - e.g. cat = !stdin(c).stdout<c>.0
     - send/recv never inspect the values so it's fine
@@ -93,12 +93,13 @@ Computing spillability of a variable x if there are no loops or matches:
 
 Spillability of x if there are loops (but not matches):
 - Loops "run forever" but could technically "wait forever" because reads/writes wait
-- For now, simple heuristic: forks(x, loop P) = k * forks(x, P) for some big k
+- For now, simple heuristic: forks(x, loop P) = k forks(x, P) for some big k
   - Assume loops fork much more than non-loops
-  - Assume n > m ==> loop with n forks always worse loop with m forks
+  - Assume n > m ==> loop with n forks always worse than loop with m forks
 
 Spillability of x if there are matches:
 - Unlike (+), matches probably won't choose subprocesses uniformly at random
 - For now, simple heuristic:
   - forks(x, match y {_ -> P₁; ..; _ -> Pₙ}) = max forks(x, Pᵢ) for i in {1 .. n}
   - Always assume the worst
+
