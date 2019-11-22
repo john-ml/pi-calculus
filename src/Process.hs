@@ -77,6 +77,7 @@ ub p = go M.empty p `evalState` maxUsed p where
 type AnnoF a f = Compose ((,) a) f
 pattern AnnoF t p = Compose (t, p)
 pattern Anno t p = Fix (Compose (t, p))
+
 anno :: (Base Process a -> a) -> Process -> Fix (AnnoF a (Base Process))
 anno f = cata $ \ p ->
   let ann x = Anno x p in
@@ -89,6 +90,9 @@ anno f = cata $ \ p ->
     Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
     LoopF (Anno a _) -> ann (f (LoopF a))
     MatchF x arms -> ann (f (MatchF x (map (\ (y, Anno a _) -> (y, a)) arms)))
+
+unanno :: Fix (AnnoF a (Base Process)) -> Process
+unanno = hoist (snd . getCompose)
 
 -- Free variables
 fvF :: Base Process (Set Var) -> Set Var
@@ -169,16 +173,19 @@ sortedVars :: Process -> [Var]
 sortedVars p = L.sortOn (`forks` p) (S.toList (uv p))
 
 -- Interference constraint
-type Constraint = Set Var
+type Constraint = (Var, Var)
+
+clique :: Set Var -> Set Constraint
+clique xs = S.fromList [(x, y) | x:ys <- L.tails (S.toList xs), y <- ys]
 
 -- Collect interference constraints
-constraints :: Process -> Set Constraint
-constraints p = fv p `S.insert` case p of
-  Halt -> S.empty
-  New _ p -> constraints p
-  Send _ _ p -> constraints p
-  Recv _ _ p -> constraints p
-  p :|: q -> constraints p ∪ constraints q
-  p :+: q -> constraints p ∪ constraints q
-  Loop p -> constraints p
-  Match' _ _ ps -> foldMap constraints ps
+constraints :: FVProcess -> Set Constraint
+constraints = fold $ \case
+  AnnoF (clique -> vs) HaltF -> vs
+  AnnoF (clique -> vs) (NewF _ ps) -> vs ∪ ps
+  AnnoF (clique -> vs) (SendF _ _ ps) -> vs ∪ ps
+  AnnoF (clique -> vs) (RecvF _ _ ps) -> vs ∪ ps
+  AnnoF (clique -> vs) (ps :|:$ qs) -> vs ∪ ps ∪ qs
+  AnnoF (clique -> vs) (ps :+:$ qs) -> vs ∪ ps ∪ qs
+  AnnoF (clique -> vs) (LoopF ps) -> vs ∪ ps
+  AnnoF (clique -> vs) (MatchF _ (map snd -> ps)) -> vs ∪ F.fold ps
