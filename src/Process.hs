@@ -11,6 +11,7 @@ import Data.Functor.Foldable.TH
 import Data.Functor.Classes
 import Data.Functor.Compose
 import Control.Monad.State
+import Control.Monad.Reader
 import Control.Monad.Writer.Strict
 import Control.Monad.Trans.Maybe
 import Control.Applicative
@@ -18,6 +19,9 @@ import Text.Show.Deriving
 
 import Data.SBV
 import qualified Data.SBV.Internals as SBVI
+
+import Data.String (IsString (..))
+import Data.DList (DList); import qualified Data.DList as D
 
 type Var = Word64
 
@@ -202,6 +206,7 @@ varName :: Var -> String
 varName x = "x" ++ show x
 
 data Register = Rbx | R12 | R13 | R14 | R15 | Spill Word64 deriving (Eq, Ord, Show)
+type Alloc = Map Var Register
 
 intOfReg :: Register -> Word64
 intOfReg = \case Rbx -> 0; R12 -> 1; R13 -> 2; R14 -> 3; R15 -> 4; Spill n -> n + 5
@@ -210,13 +215,9 @@ regOfWord64 :: Word64 -> Register
 regOfWord64 = \case 0 -> Rbx; 1 -> R12; 2 -> R13; 3 -> R14; 4 -> R15; n -> Spill (n - 5)
 
 spill :: Word64 -> Register
-spill n
-  | n <= 0 = error $ "spill (" ++ show n ++ ")"
-  | otherwise = Spill (n + 5)
+spill n = Spill (n + 5)
 
-type Allocation = Map Var Register
-
-asgts :: Provable a => a -> Symbolic (Maybe (Map Var Register))
+asgts :: Provable a => a -> Symbolic (Maybe Alloc)
 asgts m = liftIO (sat m) >>= \case
   model@(SatResult (Satisfiable _ _)) ->
     return . Just
@@ -228,7 +229,7 @@ asgts m = liftIO (sat m) >>= \case
 
 tryAlloc ::
   [Var] -> [Var] -> Word64 -> Set Constraint ->
-  Symbolic (Maybe (Map Var Register))
+  Symbolic (Maybe Alloc)
 tryAlloc spillable unspillable maxSpills interference = asgts $ do
   let vars' = spillable ++ unspillable
   vars <- M.fromList . zip vars' <$> mapM (exists . varName) vars'
@@ -246,8 +247,8 @@ bsearchM f lo mid hi = go' lo mid hi =<< f mid where
     Just r' -> return $ Just r'
     Nothing -> return $ Just (mid, r)
 
-alloc :: [Var] -> Set Constraint -> IO (Maybe (Map Var Register))
-alloc vars interference = runSMT . runMaybeT $ do
+allocWith :: [Var] -> Set Constraint -> IO (Maybe Alloc)
+allocWith vars interference = runSMT . runMaybeT $ do
   -- 1) Find the smallest number of spills needed.
   (spills, r) <- MaybeT $ bsearchM spilling 0 (guessSpill $ length vars) (1 + length vars)
   -- 2) Find the smallest number of spill slots needed.
@@ -266,3 +267,50 @@ alloc vars interference = runSMT . runMaybeT $ do
     shrinking spills slots =
       let (sp, unsp) = L.genericSplitAt spills vars in
       tryAlloc sp unsp slots interference
+
+alloc :: FVProcess -> IO Alloc
+alloc p = allocWith (sortedVars p) (constraints p) >>= \case
+  Nothing -> error $ "Register allocation failed."
+  Just m -> return m
+
+-- -------------------- Code generation --------------------
+
+type Str = DList Char -- For efficient catenation
+
+-- Indentation as input
+type Code = Reader Str Str
+deriving instance Semigroup a => Semigroup (Reader r a)
+
+runCode :: Code -> String
+runCode c = D.toList $ c `runReader` ""
+
+str :: Str -> Code
+str s = (<> s) <$> ask
+
+instance IsString Code where fromString = str . D.fromList
+
+indent :: Code -> Code
+indent = local ("  " <>)
+
+linesG :: [Code] -> Code
+linesG ls = do
+  s <- ask
+  foldMap (\ l -> s <> l <> "\n") <$> sequence ls
+
+procG :: Str -> Code -> Code
+procG name body = linesG
+  [ "void " <> str name <> " (void) {"
+  , indent body
+  , "}"
+  ]
+
+mainG :: Code -> Code
+mainG body = linesG
+  [ "void main(void) {"
+  , indent "gt_init();"
+  , indent body
+  , indent "gt_exit(0);"
+  , "}"
+  ]
+
+-- codegen :: 

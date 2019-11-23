@@ -8,11 +8,11 @@ println x = do print x; putStrLn ""
 
 testAlloc p = do
   let p' = sinkNews . fvAnno $ ub p
-  println =<< alloc (S.toList (uv (unanno p'))) (constraints p')
+  println =<< alloc p'
 
 testAlloc' p = do
   let p' = fvAnno $ ub p
-  println =<< alloc (S.toList (uv (unanno p'))) (constraints p')
+  println =<< alloc p'
 
 testSMT :: Symbolic ()
 testSMT = do
@@ -22,7 +22,7 @@ testSMT = do
     constrain $ x ./= y
     constrain $ x .< 10
     constrain $ y .< 10
-  liftIO . print $ getModelDictionary r
+  liftIO . println $ getModelDictionary r
 
 main = do
   println 0
@@ -47,3 +47,4 @@ main = do
             $ Halt
   testAlloc' p
   testAlloc p
+  putStrLn . runCode $ mainG ""
