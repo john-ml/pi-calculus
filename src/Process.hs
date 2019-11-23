@@ -273,44 +273,74 @@ alloc p = allocWith (sortedVars p) (constraints p) >>= \case
   Nothing -> error $ "Register allocation failed."
   Just m -> return m
 
--- -------------------- Code generation --------------------
+-- -------------------- Code generation utils --------------------
 
 type Str = DList Char -- For efficient catenation
 
--- Indentation as input
-type Code = Reader Str Str
+-- Indentation and allocation as input
+type Code = Reader (Alloc, Str) Str
 deriving instance Semigroup a => Semigroup (Reader r a)
+deriving instance Monoid a => Monoid (Reader r a)
 
-runCode :: Code -> String
-runCode c = D.toList $ c `runReader` ""
+show' :: Show a => a -> Str
+show' = D.fromList . show
 
-str :: Str -> Code
-str s = (<> s) <$> ask
+show'' :: Show a => a -> Code
+show'' = pure . show'
 
-instance IsString Code where fromString = str . D.fromList
+runCode :: Alloc -> Code -> String
+runCode alloc c = D.toList $ c `runReader` (alloc, "")
+
+instance IsString Code where fromString = pure . D.fromList
 
 indent :: Code -> Code
-indent = local ("  " <>)
+indent = local (fmap ("  " <>))
 
-linesG :: [Code] -> Code
-linesG ls = do
-  s <- ask
-  foldMap (\ l -> s <> l <> "\n") <$> sequence ls
+line :: Str -> Code
+line l = reader $ \ (_, s) -> s <> l <> "\n"
+
+line' :: Code -> Code
+line' l = reader $ \ r@(_, s) -> s <> runReader l r <> "\n"
+
+-- -------------------- Code generation --------------------
+
+varG :: Var -> Code
+varG x = (M.! x) . fst <$> ask >>= \case
+  Rbx -> pure "rbx"
+  R12 -> pure "r12"
+  R13 -> pure "r13"
+  R14 -> pure "r14"
+  R15 -> pure "r15"
+  Spill n -> pure $ "spill" <> show' n
 
 procG :: Str -> Code -> Code
-procG name body = linesG
-  [ "void " <> str name <> " (void) {"
+procG name body = F.fold
+  [ line ("void " <> name <> "(void) {")
   , indent body
-  , "}"
+  , line "}"
   ]
 
+spillProcG :: Str -> Set Var -> Code -> Code
+spillProcG name spilled body = procG name $ F.fold
+  [ line "gt_ch *rsp = gt_self()->rsp;"
+  , F.fold (zipWith mkSpill [0..] (S.toAscList spilled))
+  , body
+  , line $ "asm (\"addq $" <> show' spillBytes <> ", %%rsp\\t\\n\" : : : \"rsp\");"
+  ]
+  where
+    mkSpill offset x =
+      line' $ "gt_ch " <> varG x <> " = rsp[" <> show'' offset <> "];"
+    spillBytes = 16 * ((S.size spilled + 1) `div` 2)
+
 mainG :: Code -> Code
-mainG body = linesG
-  [ "void main(void) {"
-  , indent "gt_init();"
-  , indent body
-  , indent "gt_exit(0);"
-  , "}"
+mainG body = F.fold
+  [ line "void main(void) {"
+  , indent $ F.fold
+      [ line "gt_init();"
+      , body
+      , line "gt_exit(0);"
+      ]
+  , line "}"
   ]
 
 -- codegen :: 

@@ -1,6 +1,7 @@
 import Process
 import Data.SBV
 import qualified Data.Set as S
+import qualified Data.Map as M
 import Control.Monad.Trans
 
 println :: Show a => a -> IO ()
@@ -47,4 +48,5 @@ main = do
             $ Halt
   testAlloc' p
   testAlloc p
-  putStrLn . runCode $ mainG ""
+  putStrLn . runCode (M.fromList [(0, Spill 3), (1, Spill 4)])
+    $ mainG (spillProcG "f" (S.fromList [0, 1]) "")
