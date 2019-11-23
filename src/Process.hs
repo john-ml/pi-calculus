@@ -2,7 +2,7 @@ module Process where
 
 import qualified Data.List as L
 import Data.Set (Set, (\\)); import qualified Data.Set as S
-import Data.Map (Map); import qualified Data.Map as M
+import Data.Map.Strict (Map); import qualified Data.Map.Strict as M
 import Data.Semigroup
 import qualified Data.Foldable as F
 import Data.Functor
@@ -12,12 +12,14 @@ import Data.Functor.Classes
 import Data.Functor.Compose
 import Control.Monad.State
 import Control.Monad.Writer.Strict
+import Control.Monad.Trans.Maybe
 import Control.Applicative
 import Text.Show.Deriving
 
 import Data.SBV
+import qualified Data.SBV.Internals as SBVI
 
-type Var = Int
+type Var = Word64
 
 data Process
   = Halt
@@ -182,34 +184,85 @@ constraints = fold $ \case
 
 -- Expected number of forks that happen in a variable's lifetime
 forks :: Var -> FVProcess -> Double
-forks x = \case
+forks x = fix $ \ go -> \case
   AHalt _ -> 0
-  ANew _ _ p -> forks x p
-  ASend _ _ _ p -> forks x p
-  ARecv _ _ _ p -> forks x p
-  ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + forks x p + forks x q
-  APick _ p q -> forks x p / 2 + forks x q / 2
-  ALoop _ p -> 100 * forks x p
-  AMatch' _ _ _ ps -> maximum (0 : map (forks x) ps)
+  ANew _ _ p -> go p
+  ASend _ _ _ p -> go p
+  ARecv _ _ _ p -> go p
+  ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + go p + go q
+  APick _ p q -> go p / 2 + go q / 2
+  ALoop _ p -> 100 * go p
+  AMatch' _ _ _ ps -> maximum (0 : map go ps)
 
--- The variables in a process, sorted by forks
+-- The variables in a process, sorted in increasing order by forks
 sortedVars :: FVProcess -> [Var]
 sortedVars p = L.sortOn (`forks` p) (S.toList (uv (unanno p)))
 
 varName :: Var -> String
 varName x = "x" ++ show x
 
-type Register = Int
+data Register = Rbx | R12 | R13 | R14 | R15 | Spill Word64 deriving (Eq, Ord, Show)
 
-registers :: [Register]
-registers = [0, 1, 2, 3, 4]
+intOfReg :: Register -> Word64
+intOfReg = \case Rbx -> 0; R12 -> 1; R13 -> 2; R14 -> 3; R15 -> 4; Spill n -> n + 5
 
-regName :: Register -> String
-regName = \case
-  0 -> "rbx"
-  1 -> "r12"
-  2 -> "r13"
-  3 -> "r14"
-  4 -> "r15"
-  n -> "spill" ++ show n
+regOfWord64 :: Word64 -> Register
+regOfWord64 = \case 0 -> Rbx; 1 -> R12; 2 -> R13; 3 -> R14; 4 -> R15; n -> Spill (n - 5)
 
+spill :: Word64 -> Register
+spill n
+  | n <= 0 = error $ "spill (" ++ show n ++ ")"
+  | otherwise = Spill (n + 5)
+
+type Allocation = Map Var Register
+
+asgts :: Provable a => a -> Symbolic (Maybe (Map Var Register))
+asgts m = liftIO (sat m) >>= \case
+  model@(SatResult (Satisfiable _ _)) ->
+    return . Just
+      . M.mapKeys varOfString
+      $ regOfWord64 . SBVI.fromCV <$> getModelDictionary model
+  _ -> return Nothing
+  where
+    varOfString ('x':n) = read n :: Word64
+
+tryAlloc ::
+  [Var] -> [Var] -> Word64 -> Set Constraint ->
+  Symbolic (Maybe (Map Var Register))
+tryAlloc spillable unspillable maxSpills interference = asgts $ do
+  let vars' = spillable ++ unspillable
+  vars <- M.fromList . zip vars' <$> mapM (exists . varName) vars'
+  mapM_ (\ (x :/=: y) -> constrain $ vars M.! x ./= vars M.! y) interference
+  mapM_ (\ x -> constrain $ vars M.! x .< literal (5 + maxSpills)) spillable
+  mapM_ (\ x -> constrain $ vars M.! x .< literal 5) unspillable
+
+bsearchM :: (Monad m, Integral a) => (a -> m (Maybe b)) -> a -> a -> a -> m (Maybe (a, b))
+bsearchM f lo mid hi = go' lo mid hi =<< f mid where
+  rec lo hi = go lo mid hi =<< f mid where mid = (lo + hi) `div` 2
+  go lo mid _ m | lo == mid = return $ (mid,) <$> m
+  go lo mid hi m = go' lo mid hi m
+  go' _ mid hi Nothing = rec mid hi
+  go' lo mid _ (Just r) = rec lo mid >>= \case
+    Just r' -> return $ Just r'
+    Nothing -> return $ Just (mid, r)
+
+alloc :: [Var] -> Set Constraint -> IO (Maybe (Map Var Register))
+alloc vars interference = runSMT . runMaybeT $ do
+  -- 1) Find the smallest number of spills needed.
+  (spills, r) <- MaybeT $ bsearchM spilling 0 (guessSpill $ length vars) (1 + length vars)
+  -- 2) Find the smallest number of spill slots needed.
+  (_, r) <- MaybeT $ bsearchM (shrinking spills) 0 (guessSlot $ maxSp) maxSp
+  return r
+  where
+    -- Maximum spill slots
+    maxSp = 10
+    -- Initial guess for number of spills.
+    guessSpill x = x `div` 10
+    -- Initial guess for number of slots.
+    guessSlot x = (x `div` 10) `max` 2
+    spilling spills =
+      let (sp, unsp) = L.genericSplitAt spills vars in
+      tryAlloc sp unsp maxSp interference
+    shrinking spills slots =
+      let (sp, unsp) = L.genericSplitAt spills vars in
+      tryAlloc sp unsp slots interference
