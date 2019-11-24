@@ -560,13 +560,12 @@ parse s = parse' "" s
 parseFile :: FilePath -> IO (Either String Process)
 parseFile f = parse' f <$> readFile f
 
--- -------------------- End-to-end compilation --------------------
+-- -------------------- Compilation to C --------------------
 
-compile :: String -> IO (Either String String)
-compile s = mapM codeGen (parse s)
+transpile :: String -> IO (Either String String)
+transpile s = mapM codeGen (parse s)
 
-compileFile :: FilePath -> IO (Either String String)
-compileFile f = parseFile f >>= \case
+transpileFile :: FilePath -> IO (Either String String)
+transpileFile f = parseFile f >>= \case
   Left err -> return $ Left err
   Right p -> Right <$> codeGen p
-

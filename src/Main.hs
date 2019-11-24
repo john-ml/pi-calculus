@@ -33,11 +33,11 @@ printGen p = putStrLn =<< codeGen p
 printParse :: String -> IO ()
 printParse s = either putStrLn println $ parse s
 
-printCompile :: String -> IO ()
-printCompile s = either putStrLn putStrLn =<< compile s
+printTranspile :: String -> IO ()
+printTranspile s = either putStrLn putStrLn =<< transpile s
 
-printCompileFile :: FilePath -> IO ()
-printCompileFile f = either putStrLn putStrLn =<< compileFile f
+printTranspileFile :: FilePath -> IO ()
+printTranspileFile f = either putStrLn putStrLn =<< transpileFile f
 
 main = do
   println 0
@@ -69,8 +69,8 @@ main = do
   printParse "new x."
   let s = "new x; x <- y; match x { y => x -> y.\nz => y -> z. }"
   printParse s
-  printCompile s
-  printCompile "new x; match x <- y"
+  printTranspile s
+  printTranspile "new x; match x <- y"
   printParse "new x;\nnew y;\nloop {\nx -> y.\n}\n"
-  printCompileFile "examples/loop.pi"
-  printCompileFile "examples/loop_faulty.pi"
+  printTranspileFile "examples/loop.pi"
+  printTranspileFile "examples/loop_faulty.pi"
