@@ -3,6 +3,8 @@ import Data.SBV
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Control.Monad.Trans
+import Control.Monad.State.Strict
+import qualified Text.Megaparsec as P
 
 println :: Show a => a -> IO ()
 println x = do print x; putStrLn ""
@@ -27,6 +29,9 @@ testSMT = do
 
 printGen :: Process -> IO ()
 printGen p = putStrLn =<< codeGen p
+
+printParse :: String -> IO ()
+printParse s = either putStrLn println $ parse s
 
 main = do
   println 0
@@ -55,3 +60,5 @@ main = do
     $ mainG (spillProcG (S.fromList [0, 1]) "f" "")
   printGen p
   printGen . New 1 $ New 0 (Loop (Recv 2 0 Halt) :|: Loop (Send 1 0 Halt))
+  printParse "new x."
+  printParse "new x; x <- y; match x { y => x -> y.\nz => y -> z. }."

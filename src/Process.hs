@@ -5,6 +5,7 @@ import Data.Set (Set, (\\)); import qualified Data.Set as S
 import Data.Map.Strict (Map); import qualified Data.Map.Strict as M
 import Data.Semigroup
 import qualified Data.Foldable as F
+import Data.Bifunctor
 import Data.Functor
 import Data.Functor.Foldable
 import Data.Functor.Foldable.TH
@@ -22,6 +23,13 @@ import qualified Data.SBV.Internals as SBVI
 
 import Data.String (IsString (..))
 import Data.DList (DList); import qualified Data.DList as D
+
+import Data.Char
+import Data.Void
+import Text.Megaparsec (ParsecT, MonadParsec)
+import qualified Text.Megaparsec as P
+import Text.Megaparsec.Char
+import qualified Text.Megaparsec.Char.Lexer as L
 
 type Var = Word64
 
@@ -463,3 +471,85 @@ codeGen p = do
   let p' = sinkNews . fvAnno $ ub p
   a <- alloc p'
   return $ runGen a (genTop p')
+
+-- -------------------- Parsing utils --------------------
+
+type Parser = ParsecT Void String (State (Map String Word64))
+
+sc :: Parser ()
+sc = L.space space1 empty empty
+
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme sc
+
+symbol :: String -> Parser String
+symbol = L.symbol sc
+
+tryAll :: (Foldable f, MonadParsec e s m) => f (m a) -> m a
+tryAll = foldr ((<|>) . P.try) empty
+
+symbols :: [String] -> Parser String
+symbols = tryAll . fmap symbol
+
+parens :: Parser a -> Parser a
+parens = P.between (symbol "(") (symbol ")")
+
+braces :: Parser a -> Parser a
+braces = P.between (symbol "{") (symbol "}")
+
+-- -------------------- Parsing --------------------
+
+keywords :: [String]
+keywords = ["new", "all", "any", "loop", "match"]
+
+word :: Parser String
+word = do
+  s <- lexeme $ some alphaNumChar
+  guard . not $ s `elem` keywords
+  return s
+
+varP :: Parser Var
+varP = do
+  x <- word
+  (M.!? x) <$> get >>= \case
+    Nothing -> do
+      n <- fromIntegral . M.size <$> get
+      modify' (M.insert x n)
+      return n
+    Just n -> return n
+
+haltP :: Parser Process = Halt <$ symbol "."
+
+contP :: Parser Process = P.try haltP <|> symbol ";" *> procP
+
+newP :: Parser Process = symbol "new" >> mkNew <$> some varP <*> contP where
+  mkNew xs p = foldr New p xs
+
+sendP :: Parser Process = Send <$> varP <* symbol "->" <*> varP <*> contP
+
+recvP :: Parser Process = Recv <$> varP <* symbol "<-" <*> varP <*> contP
+
+binopP :: String -> (Process -> Process -> Process) -> Parser Process
+binopP keyword op = symbol keyword >> mk <$> braces (many procP) where
+  mk = \case
+    [] -> Halt
+    [p] -> p
+    x:xs -> L.foldl' op x xs
+
+anyP :: Parser Process = binopP "any" (:+:)
+
+allP :: Parser Process = binopP "all" (:|:)
+
+loopP :: Parser Process = symbol "loop" >> Loop <$> braces procP
+
+matchP :: Parser Process
+matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
+  armP = (,) <$> varP <* symbol "=>" <*> procP
+
+procP :: Parser Process = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP]
+
+parse :: String -> Either String Process
+parse s =
+  first P.errorBundlePretty
+    $ P.runParserT (procP <* P.eof) "" s `evalState` M.empty
+
