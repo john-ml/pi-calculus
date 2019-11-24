@@ -5,6 +5,7 @@ import qualified Data.Map as M
 import Control.Monad.Trans
 import Control.Monad.State.Strict
 import qualified Text.Megaparsec as P
+import System.Environment
 
 println :: Show a => a -> IO ()
 println x = do print x; putStrLn ""
@@ -39,7 +40,7 @@ printTranspile s = either putStrLn putStrLn =<< transpile s
 printTranspileFile :: FilePath -> IO ()
 printTranspileFile f = either putStrLn putStrLn =<< transpileFile f
 
-main = do
+tests = do
   println 0
   println . fvAnno . New 0 . New 1 . Send 0 2 . Send 1 2 $ Halt
   println . sinkNews . fvAnno . New 0 . New 1 . Send 0 2 . Send 1 2 $ Halt
@@ -76,3 +77,11 @@ main = do
   printTranspileFile "examples/loop_faulty.pi"
   compileFile "examples/loop.pi" "examples/out/loop.c" "examples/out/loop"
   compileFile "examples/deadlock.pi" "examples/out/deadlock.c" "examples/out/deadlock"
+
+main = getArgs >>= \case
+  ["test"] -> tests
+  [piIn, cOut, binOut] -> compileFile piIn cOut binOut
+  _ -> do
+    putStrLn "Usage:"
+    putStrLn "  pi test (run some tests)"
+    putStrLn "  pi in.pi out.c out (compile in.pi to out.c and binary out)"
