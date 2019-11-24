@@ -25,6 +25,9 @@ testSMT = do
     constrain $ y .< 10
   liftIO . println $ getModelDictionary r
 
+printGen :: Process -> IO ()
+printGen p = putStrLn =<< codeGen p
+
 main = do
   println 0
   println . fvAnno . New 0 . New 1 . Send 0 2 . Send 1 2 $ Halt
@@ -50,4 +53,5 @@ main = do
   testAlloc p
   putStrLn . runCode (M.fromList [(0, Spill 3), (1, Spill 4)])
     $ mainG (spillProcG (S.fromList [0, 1]) "f" "")
-  putStrLn =<< codeGen p
+  printGen p
+  printGen . New 1 $ New 0 (Loop (Recv 2 0 Halt) :|: Loop (Send 1 0 Halt))

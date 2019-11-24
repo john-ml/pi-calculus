@@ -1,7 +1,7 @@
 // ---------------------------- Hyperparameters --------------------------------
 
-// #define NDEBUG // asserts
-#define NPRINTFDEBUG // debug logs
+// #define NDEBUG // no asserts
+#define NPRINTFDEBUG // no debug logs
 #define GT_CHAN_SIZE 0x10 // size of channel ring buffer
 
 // -----------------------------------------------------------------------------
@@ -20,7 +20,7 @@ typedef struct gt_ctx *gt_t;
 void gt_init(void);
 
 // Spawn a new thread with n-byte stack
-void gt_go(void f(void), size_t n);
+gt_t gt_go(void f(void), size_t n);
 
 // Current thread
 gt_t gt_self(void);
@@ -64,7 +64,7 @@ void gt_dump(void);
 // An execution context
 typedef struct gt_ctx {
   char *rsp;
-  uint64_t rbx, rbp, r12, r13, r14, r15;
+  void *rbx, *rbp, *r12, *r13, *r14, *r15;
   char *sp; // Thread stack
   gt_t next; // Used in read/write queues, OFF list, ON queue
 } gt_ctx;
@@ -145,11 +145,18 @@ void gt_switch_asm(gt_t old, gt_t new);
 
 // Assume result is 8-aligned
 static void *mmalloc(size_t bytes) {
-  return mmap(
-    NULL, bytes,
-    PROT_READ | PROT_WRITE,
-    MAP_PRIVATE | MAP_ANONYMOUS,
-    -1, 0);
+  void *p = MAP_FAILED;
+  while (p == MAP_FAILED) {
+    p = mmap(
+      NULL, bytes,
+      PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANONYMOUS,
+      -1, 0);
+    bytes -= 1ull << 16;
+  }
+  debugf("Acquired %llu bytes with mmalloc.\n", bytes + (1ull << 16));
+  assert(p != MAP_FAILED && "mmalloc: mmap failed");
+  return p;
 }
 
 void gt_init(void) {
@@ -164,7 +171,7 @@ void gt_init(void) {
   channels_free = NULL;
 }
 
-void gt_go(void f(void), size_t n) {
+gt_t gt_go(void f(void), size_t n) {
   gt_t t;
   if (threads_free) {
     t = threads_free;
@@ -179,6 +186,7 @@ void gt_go(void f(void), size_t n) {
   *(uint64_t *)&t->sp[n - 8] = (uint64_t)gt_stop;
   *(uint64_t *)&t->sp[n - 16] = (uint64_t)f;
   gt_queue_enq(&threads_on, t);
+  return t;
 }
 
 gt_t gt_self(void) { return current; }

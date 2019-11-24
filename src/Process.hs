@@ -346,7 +346,7 @@ spillProcG spilled name body = procG name $ F.fold
 
 mainG :: Code -> Code
 mainG body = F.fold
-  [ line "void main(void) {"
+  [ line "int main(void) {"
   , indent $ F.fold
     [ line "gt_init();"
     , body
@@ -389,7 +389,9 @@ bothG p qs q = do
     [ line $ "gt_t " <> t <> " = " <> call f spilled
     , F.fold . for (S.toAscList unspilled) $ \ v ->
         line' $ pure t <> "->" <> varG v <> " = " <> varG v <> ";"
-    , line $ "gt_ch *" <> rsp <> " = ((gt_ch *)" <> t <> "->rsp) + 1;"
+    , if not $ S.null spilled
+      then line $ "gt_ch *" <> rsp <> " = ((gt_ch *)" <> t <> "->rsp) + 1;"
+      else ""
     , F.fold . for2 [0..] (S.toAscList spilled) $ \ offset v ->
         line' $ pure rsp <> "[" <> show'' offset <> "] = " <> varG v <> ";"
     , p'
@@ -446,7 +448,7 @@ gen = \case
 genTop :: FVProcess -> Gen Code
 genTop p = do
   tell $ line "#include <stdlib.h>"
-  tell $ line "#include <runtime.c>"
+  tell $ line "#include \"runtime.c\""
   mainG <$> gen p
 
 runGen :: Alloc -> Gen Code -> String
