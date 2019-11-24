@@ -590,7 +590,8 @@ compile s cOut binOut = transpile s >>= \case
   Left err -> putStrLn err
   Right c -> do
     writeFile cOut c
-    P.createProcess (P.proc "gcc" ["-I", "src", "src/gt_switch.s", cOut, "-o", binOut])
+    let flags = ["-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
+    P.createProcess (P.proc "gcc" flags)
     return ()
 
 compileFile :: FilePath -> FilePath -> FilePath -> IO ()

@@ -4,5 +4,6 @@
 .stack-work
 examples/out/*
 !examples/out/*.c
-bin
+runtime/tests/*
+!runtime/tests/*.c
 dist
