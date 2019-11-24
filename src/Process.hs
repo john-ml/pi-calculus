@@ -139,7 +139,7 @@ ub p = go M.empty p `evalState` maxUsed p where
     p :|: q -> liftA2 (:|:) (go σ p) (go σ q)
     p :+: q -> liftA2 (:+:) (go σ p) (go σ q)
     Loop p -> Loop <$> go σ p
-    Match x yps -> Match x <$> traverse (traverse (go σ)) yps
+    Match x yps -> Match (σ ! x) <$> mapM (\ (y, p) -> (σ ! y,) <$> go σ p) yps
   σ ! x = M.findWithDefault x x σ
   gen = modify' succ *> get
 
@@ -339,6 +339,7 @@ procG :: Code -> Code -> Code
 procG name body = F.fold
   [ line' ("void " <> name <> "(void) {")
   , indent body
+  , indent $ line "asm (\"jmp gt_stop\\t\\n\");"
   , line "}"
   ]
 
@@ -347,12 +348,10 @@ spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
 
 spillProcG :: Set Var -> Code -> Code -> Code
 spillProcG spilled name body = procG name $ F.fold
-  [ line "gt_ch *rsp = gt_self()->rsp;"
+  [ line "gt_ch *rsp = (gt_ch *)gt_self()->rsp + 1;"
   , F.fold . for2 [0..] (S.toAscList spilled) $ \ offset x ->
       line' $ "gt_ch " <> varG x <> " = rsp[" <> show'' offset <> "];"
   , body
-  , line $ "asm (\"addq $" <> show' (spillSize spilled) <> ", %%rsp\\t\\n\"" <>
-      " : : : \"rsp\");"
   ]
 
 mainG :: Code -> Code

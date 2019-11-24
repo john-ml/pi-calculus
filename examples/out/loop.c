@@ -4,6 +4,7 @@ void var_f3(void) {
   for (;;) {
     r15 = gt_read(r12);
   }
+  asm ("jmp gt_stop\t\n");
 }
 void var_f0(void) {
   rbx = gt_chan();
@@ -13,6 +14,7 @@ void var_f0(void) {
   for (;;) {
     gt_write(r12, rbx);
   }
+  asm ("jmp gt_stop\t\n");
 }
 int main(void) {
   gt_init();

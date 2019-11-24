@@ -26,6 +26,7 @@ void producer(void) {
     gt_write(ch, ch + i);
     gt_yield();
   }
+  asm ("jmp gt_stop\t\n");
 }
 
 void consumer(void) {
@@ -38,6 +39,7 @@ void consumer(void) {
     puts("");
     done = true;
   }
+  asm ("jmp gt_stop\t\n");
 }
 
 int main(void) {

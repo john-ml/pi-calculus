@@ -21,7 +21,19 @@ typedef struct gt_ctx *gt_t;
 void gt_init(void);
 
 // Spawn a new thread with n-byte stack
+// f must jmp gt_stop instead of returning.
 gt_t gt_go(void f(void), size_t n);
+
+// Spawn a new thread with n-byte stack and initial m-byte alloca.
+// i.e., initial stack is
+//                    .
+//                    .
+//   &f               .
+//   .                .  n bytes
+//   .   m bytes      .
+//   .                .
+// f must jmp gt_stop instead of returning.
+gt_t gt_go_alloca(void f(void), size_t m, size_t n);
 
 // Current thread
 gt_t gt_self(void);
@@ -172,7 +184,9 @@ void gt_init(void) {
   channels_free = NULL;
 }
 
-gt_t gt_go(void f(void), size_t n) {
+gt_t gt_go(void f(void), size_t n) { return gt_go_alloca(f, 0, n); }
+
+gt_t gt_go_alloca(void f(void), size_t m, size_t n) {
   gt_t t;
   if (threads_free) {
     t = threads_free;
@@ -183,9 +197,7 @@ gt_t gt_go(void f(void), size_t n) {
   // Set up thread stack
   t->sp = !t->sp ? malloc(n) : realloc(t->sp, n);
   assert(t->sp && "gt_go: failed to allocate stack");
-  t->rsp = &t->sp[n - 16];
-  *(uint64_t *)&t->sp[n - 8] = (uint64_t)gt_stop;
-  *(uint64_t *)&t->sp[n - 16] = (uint64_t)f;
+  *(void **)(t->rsp = &t->sp[n - 8 - m]) = f;
   gt_queue_enq(&threads_on, t);
   return t;
 }
