@@ -193,15 +193,18 @@ clique xs = S.fromList [x :/=: y | x : ys <- L.tails (S.toList xs), y <- ys]
 
 -- Collect interference constraints
 constraints :: FVProcess -> Set Constraint
-constraints = fold $ \case
-  AnnoF (clique -> vs) HaltF -> vs
-  AnnoF (clique -> vs) (NewF _ ps) -> vs ∪ ps
-  AnnoF (clique -> vs) (SendF _ _ ps) -> vs ∪ ps
-  AnnoF (clique -> vs) (RecvF _ _ ps) -> vs ∪ ps
-  AnnoF (clique -> vs) (ps :|:$ qs) -> vs ∪ ps ∪ qs
-  AnnoF (clique -> vs) (ps :+:$ qs) -> vs ∪ ps ∪ qs
-  AnnoF (clique -> vs) (LoopF ps) -> vs ∪ ps
-  AnnoF (clique -> vs) (MatchF _ (map snd -> ps)) -> vs ∪ F.fold ps
+constraints = go S.empty where
+  go s = \case
+    AHalt (clique' -> vs) -> vs
+    ANew (clique' -> vs) _ p -> vs ∪ go s p
+    ASend (clique' -> vs) _ _ p -> vs ∪ go s p
+    ARecv (clique' -> vs) _ _ p -> vs ∪ go s p
+    ABoth (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
+    APick (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
+    -- The tricky one: whatever is live now must still be live throughout body
+    ALoop s'@(clique' -> vs) p -> vs ∪ go (s ∪ s') p 
+    AMatch' (clique' -> vs) _ _ ps -> vs ∪ foldMap (go s) ps
+    where clique' xs = clique $ s ∪ xs
 
 -- Expected number of forks that happen in a variable's lifetime
 forks :: Var -> FVProcess -> Double
