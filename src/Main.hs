@@ -58,7 +58,7 @@ tests = do
   println . constraints . sinkNews . fvAnno $ ub q
   testAlloc q
   runSMT testSMT
-  let p = New 0 . New 1 . New 2 . New 3 . New 4 . New 5
+  let p = New 6 . New 0 . New 1 . New 2 . New 3 . New 4 . New 5
             . Send 0 6 . Send 1 6 . Send 2 6 . Send 3 6 . Send 4 6 . Send 5 6
             $ Halt
   testAlloc' p
@@ -77,6 +77,11 @@ tests = do
   printTranspileFile "examples/loop_faulty.pi"
   compileFile "examples/loop.pi" "examples/out/loop.c" "examples/out/loop"
   compileFile "examples/deadlock.pi" "examples/out/deadlock.c" "examples/out/deadlock"
+  let r = New 6 . New 0 . New 1 . New 2 . New 3 . New 4 . New 5 $
+            (Send 1 6 $ Halt) :|: 
+            (Send 0 6 . Send 1 6 . Send 2 6 . Send 3 6 . Send 4 6 . Send 5 6
+              $ Halt)
+  writeFile "examples/out/spills_generated.c" =<< codeGen' False r
 
 main = getArgs >>= \case
   ["test"] -> tests

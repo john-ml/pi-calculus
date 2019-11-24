@@ -467,11 +467,14 @@ runGen alloc m =
 
 -- -------------------- AST Compilation --------------------
 
-codeGen :: Process -> IO String
-codeGen p = do
-  let p' = sinkNews . fvAnno $ ub p
+codeGen' :: Bool -> Process -> IO String
+codeGen' sinking p = do
+  let p' = (if sinking then sinkNews else id) . fvAnno $ ub p
   a <- alloc p'
   return $ runGen a (genTop p')
+
+codeGen :: Process -> IO String
+codeGen = codeGen' True
 
 -- -------------------- Parsing utils --------------------
 
