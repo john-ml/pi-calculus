@@ -450,7 +450,6 @@ gen = \case
         , indent p'
         , line "}"
         ]
-      , line $ "else {}"
       ]
 
 genTop :: FVProcess -> Gen Code
@@ -553,3 +552,7 @@ parse s =
   first P.errorBundlePretty
     $ P.runParserT (procP <* P.eof) "" s `evalState` M.empty
 
+-- -------------------- End-to-end compilation --------------------
+
+compile :: String -> IO (Either String String)
+compile s = mapM codeGen (parse s)

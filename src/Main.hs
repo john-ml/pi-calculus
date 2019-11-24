@@ -33,6 +33,9 @@ printGen p = putStrLn =<< codeGen p
 printParse :: String -> IO ()
 printParse s = either putStrLn println $ parse s
 
+printCompile :: String -> IO ()
+printCompile s = either putStrLn putStrLn =<< compile s
+
 main = do
   println 0
   println . fvAnno . New 0 . New 1 . Send 0 2 . Send 1 2 $ Halt
@@ -61,4 +64,7 @@ main = do
   printGen p
   printGen . New 1 $ New 0 (Loop (Recv 2 0 Halt) :|: Loop (Send 1 0 Halt))
   printParse "new x."
-  printParse "new x; x <- y; match x { y => x -> y.\nz => y -> z. }."
+  let s = "new x; x <- y; match x { y => x -> y.\nz => y -> z. }"
+  printParse s
+  printCompile s
+  printCompile "new x; match x <- y"
