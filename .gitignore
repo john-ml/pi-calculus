@@ -1,7 +1,5 @@
 *.swp
 *.swo
-*.cabal
-.stack-work
 examples/out/*
 !examples/out/*.c
 runtime/tests/*
