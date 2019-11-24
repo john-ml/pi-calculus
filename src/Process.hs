@@ -10,7 +10,7 @@ import Data.Functor.Foldable
 import Data.Functor.Foldable.TH
 import Data.Functor.Classes
 import Data.Functor.Compose
-import Control.Monad.State
+import Control.Monad.State.Strict
 import Control.Monad.Reader
 import Control.Monad.Writer.Strict
 import Control.Monad.Trans.Maybe
@@ -42,6 +42,12 @@ deriveShow1 ''ProcessF
 pattern Match' x ys zs <- Match x (L.unzip -> (ys, zs))
 
 -- -------------------- Utils --------------------
+
+for :: [a] -> (a -> b) -> [b]
+for xs f = map f xs
+
+for2 :: [a] -> [b] -> (a -> b -> c) -> [c]
+for2 xs ys f = zipWith f xs ys
 
 (∪) :: Ord a => Set a -> Set a -> Set a
 (∪) = S.union
@@ -273,7 +279,7 @@ alloc p = allocWith (sortedVars p) (constraints p) >>= \case
   Nothing -> error $ "Register allocation failed."
   Just m -> return m
 
--- -------------------- Code generation utils --------------------
+-- -------------------- C code formatting utils --------------------
 
 type Str = DList Char -- For efficient catenation
 
@@ -302,7 +308,7 @@ line l = reader $ \ (_, s) -> s <> l <> "\n"
 line' :: Code -> Code
 line' l = reader $ \ r@(_, s) -> s <> runReader l r <> "\n"
 
--- -------------------- Code generation --------------------
+-- -------------------- Code generation utils --------------------
 
 varG :: Var -> Code
 varG x = (M.! x) . fst <$> ask >>= \case
@@ -313,34 +319,84 @@ varG x = (M.! x) . fst <$> ask >>= \case
   R15 -> pure "r15"
   Spill n -> pure $ "spill" <> show' n
 
-procG :: Str -> Code -> Code
+newG :: Var -> Code
+newG x = line' $ "gt_ch " <> varG x <> " = gt_chan();"
+
+sendG :: Var -> Var -> Code
+sendG s d = line' $ "gt_write(" <> varG d <> ", " <> varG s <> ");"
+
+recvG :: Var -> Var -> Code
+recvG d s = line' $ "gt_ch " <> varG d <> " = gt_read(" <> varG s <> ");"
+
+procG :: Code -> Code -> Code
 procG name body = F.fold
-  [ line ("void " <> name <> "(void) {")
+  [ line' ("void " <> name <> "(void) {")
   , indent body
   , line "}"
   ]
 
-spillProcG :: Str -> Set Var -> Code -> Code
+spillProcG :: Code -> Set Var -> Code -> Code
 spillProcG name spilled body = procG name $ F.fold
   [ line "gt_ch *rsp = gt_self()->rsp;"
-  , F.fold (zipWith mkSpill [0..] (S.toAscList spilled))
+  , F.fold . for2 [0..] (S.toAscList spilled) $ \ offset x ->
+      line' $ "gt_ch " <> varG x <> " = rsp[" <> show'' offset <> "];"
   , body
   , line $ "asm (\"addq $" <> show' spillBytes <> ", %%rsp\\t\\n\" : : : \"rsp\");"
   ]
-  where
-    mkSpill offset x =
-      line' $ "gt_ch " <> varG x <> " = rsp[" <> show'' offset <> "];"
-    spillBytes = 16 * ((S.size spilled + 1) `div` 2)
+  where spillBytes = 16 * ((S.size spilled + 1) `div` 2)
 
 mainG :: Code -> Code
 mainG body = F.fold
   [ line "void main(void) {"
   , indent $ F.fold
-      [ line "gt_init();"
-      , body
-      , line "gt_exit(0);"
-      ]
+    [ line "gt_init();"
+    , body
+    , line "gt_exit(0);"
+    ]
   , line "}"
   ]
 
--- codegen :: 
+-- -------------------- Code generation --------------------
+
+-- Maintain helper functions generated along the way
+type Gen = Writer Code
+
+addHelper :: Code -> Gen ()
+addHelper = tell
+
+gen :: FVProcess -> Gen Code
+gen = \case
+  AHalt _ -> pure mempty
+  ANew _ x p -> (newG x <>) <$> gen p
+  ASend _ s d p -> (sendG s d <>) <$> gen p
+  ARecv _ d s p -> (recvG d s <>) <$> gen p
+  -- ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + go p + go q
+  APick _ p q -> do
+    p' <- gen p
+    q' <- gen q
+    return $ F.fold
+      [ line "if (rand() & 1) {"
+      , indent p'
+      , line "} else {"
+      , indent q'
+      , line "}"
+      ]
+  ALoop _ p -> do
+    p' <- gen p
+    return $ F.fold
+      [ line "for (;;) {"
+      , indent p'
+      , line "}"
+      ]
+  AMatch _ x yps -> do
+    let x' = varG x
+    yps' <- forM yps $ \ (y, p) -> (varG y, ) <$> gen p
+    return $ F.fold
+      [ line $ "if (0) {}"
+      , F.fold . for yps' $ \ (y', p') -> F.fold
+        [ line' $ "else if (" <> x' <> " == " <> y' <> ") {"
+        , indent p'
+        , line "}"
+        ]
+      , line $ "else {}"
+      ]
