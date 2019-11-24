@@ -8,6 +8,7 @@ IO/primitives
 
 Compilation
 - FV for liveness analysis
+  - Loops complicate this a bit
 - Register allocation using global register variables
 - Spill into C locals
 - gt_go_alloca(void f(void), size_t m, size_t n)
@@ -22,7 +23,7 @@ Compilation
   - f must (add $m, %rsp) before ret
 
 Liveness
-- Before using FV as liveness function, want to make it a bit more precise
+- Before using FV as basis for liveness function, want to make it a bit more precise
   - e.g. new x, new y, send x to z, send y to z, halt
     - FV(send x to z, send y to z, halt) = {x, y, z} ==> x, y, z interfere with each other
     - But ideally, x and y should get the same register
