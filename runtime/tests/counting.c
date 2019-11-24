@@ -5,7 +5,7 @@ const size_t PRODUCER_STACK_SIZE = 0x1000; // Need a lot for printf("%d %d ", ..
 
 #ifdef NPRINTFDEBUG
   #ifdef OPT2_FLAG
-    const size_t CONSUMER_STACK_SIZE = 0x20; // No printf + optimizations
+    const size_t CONSUMER_STACK_SIZE = 0x40; // No printf + optimizations
   #else
     const size_t CONSUMER_STACK_SIZE = 0x80; // No printf
   #endif

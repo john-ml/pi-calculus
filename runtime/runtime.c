@@ -3,6 +3,7 @@
 // #define NDEBUG // no asserts
 #define NPRINTFDEBUG // no debug logs
 #define GT_CHAN_SIZE 0x10 // size of channel ring buffer
+#define INLINE_STACK_SIZE 128 // max size of thread stack that doesn't need malloc
 
 // -----------------------------------------------------------------------------
 
@@ -80,6 +81,8 @@ typedef struct gt_ctx {
   void *rbx, *rbp, *r12, *r13, *r14, *r15;
   char *sp; // Thread stack
   gt_t next; // Used in read/write queues, OFF list, ON queue
+  char _[8]; // To ensure stack is 16-aligned
+  char stack[INLINE_STACK_SIZE]; // Inline stack
 } gt_ctx;
 
 typedef struct gt_queue {
@@ -195,7 +198,10 @@ gt_t gt_go_alloca(void f(void), size_t m, size_t n) {
     t = threads_end++;
   memset(t, 0, sizeof(*t));
   // Set up thread stack
-  t->sp = !t->sp ? malloc(n) : realloc(t->sp, n);
+  if (n > INLINE_STACK_SIZE)
+    t->sp = t->sp && t->sp != t->stack ? realloc(t->sp, n) : malloc(n);
+  else
+    t->sp = t->stack;
   assert(t->sp && "gt_go: failed to allocate stack");
   *(void **)(t->rsp = &t->sp[n - 8 - m]) = f;
   gt_queue_enq(&threads_on, t);

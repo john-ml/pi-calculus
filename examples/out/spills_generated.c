@@ -20,7 +20,7 @@ void var_f0(void) {
   r14 = gt_chan();
   r12 = gt_chan();
   r13 = gt_chan();
-  gt_t var_t4 = gt_go_alloca(var_f3, 16, 0x100000);
+  gt_t var_t4 = gt_go_alloca(var_f3, 16, 80);
   var_t4->rbx = rbx;
   var_t4->r15 = r15;
   var_t4->r14 = r14;
@@ -34,6 +34,6 @@ void var_f0(void) {
 }
 int main(void) {
   gt_init();
-  gt_t var_t1 = gt_go(var_f0, 0x100000);
+  gt_t var_t1 = gt_go(var_f0, 64);
   gt_exit(0);
 }

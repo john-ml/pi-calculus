@@ -285,10 +285,14 @@ allocWith vars interference = runSMT . runMaybeT $ do
       let (sp, unsp) = L.genericSplitAt spills vars in
       tryAlloc sp unsp slots interference
 
-alloc :: FVProcess -> IO Alloc
-alloc p = allocWith (sortedVars p) (constraints p) >>= \case
+alloc' :: Bool -> FVProcess -> IO Alloc
+alloc' True p = allocWith (sortedVars p) (constraints p) >>= \case
   Nothing -> error $ "Register allocation failed."
   Just m -> return m
+alloc' False p = return . M.fromList $ zip (S.toList . uv $ unanno p) (Spill <$> [0..])
+
+alloc :: FVProcess -> IO Alloc
+alloc = alloc' True
 
 -- -------------------- C code formatting utils --------------------
 
@@ -345,6 +349,9 @@ procG name body = F.fold
 
 spillSize :: Set Var -> Int
 spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
+
+stackSize :: Set Var -> Int
+stackSize spilled = 64 + spillSize spilled
 
 spillProcG :: Set Var -> Code -> Code -> Code
 spillProcG spilled name body = procG name $ F.fold
@@ -408,11 +415,10 @@ bothG p qs q = do
     ]
   where
     call f spilled
-      | S.null spilled = "gt_go(" <> f <> ", 0x100000);" -- TODO: stack size
+      | S.null spilled = "gt_go(" <> f <> ", " <> show' (stackSize spilled) <> ");"
       | otherwise = "gt_go_alloca(" <>
-          f <> ", " <>
-          show' (spillSize spilled) <> ", " <>
-          "0x100000);"
+          f <> ", " <> show' (spillSize spilled) <> ", " <>
+          show' (stackSize spilled) <> ");"
     wasSpilled alloc q =
       case alloc M.!? q of
         Just (Spill _) -> True
@@ -592,7 +598,7 @@ compile s cOut binOut = transpile s >>= \case
   Left err -> putStrLn err
   Right c -> do
     writeFile cOut c
-    let flags = ["-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
+    let flags = ["-O2", "-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
     P.createProcess (P.proc "gcc" flags)
     return ()
 
