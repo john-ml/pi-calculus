@@ -80,8 +80,12 @@ tests = do
 
 main = getArgs >>= \case
   ["test"] -> tests
+  [piIn, cOut] -> transpileFile piIn >>= \case
+    Left err -> putStrLn err
+    Right c -> writeFile cOut c
   [piIn, cOut, binOut] -> compileFile piIn cOut binOut
   _ -> do
     putStrLn "Usage:"
     putStrLn "  pi test (run some tests)"
+    putStrLn "  pi in.pi out.c (compile in.pi to out.c)"
     putStrLn "  pi in.pi out.c out (compile in.pi to out.c and binary out)"
