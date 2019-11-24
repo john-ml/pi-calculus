@@ -167,10 +167,11 @@ fvAnno = anno fvF
 -- New sinking
 sinkNews :: FVProcess -> FVProcess
 sinkNews = fixed . fix $ \ go ->
-  let rec x ps p = do tell (Any True); go . ANew (S.delete x ps) x =<< go p in
+  let rec' x ps p = go . ANew (S.delete x ps) x =<< go p in
+  let rec x ps p = do tell (Any True); rec' x ps p in
   \case
     ANew vs x (Anno ps p) | x ∉ ps -> go (Anno vs p)
-    ANew vs x (ANew _ y (FV ps p)) -> ANew vs y <$> rec x ps p
+    ANew vs x (ANew _ y (FV ps p)) -> ANew vs y <$> rec' x ps p
     ANew vs x (ASend _ s d (FV ps p)) | x /= s && x /= d -> ASend vs s d <$> rec x ps p
     ANew vs x (ARecv _ d s (FV ps p)) | x /= s -> ARecv vs s d <$> rec x ps p
     ANew vs x (ABoth _ (FV ps p) (FV qs q)) | x ∉ ps -> ABoth vs <$> go p <*> rec x qs q
@@ -547,12 +548,24 @@ matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
 
 procP :: Parser Process = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP]
 
-parse :: String -> Either String Process
-parse s =
+parse' :: String -> String -> Either String Process
+parse' fname s =
   first P.errorBundlePretty
-    $ P.runParserT (procP <* P.eof) "" s `evalState` M.empty
+    $ P.runParserT (procP <* P.eof) fname s `evalState` M.empty
+
+parse :: String -> Either String Process
+parse s = parse' "" s
+
+parseFile :: FilePath -> IO (Either String Process)
+parseFile f = parse' (show f) <$> readFile f
 
 -- -------------------- End-to-end compilation --------------------
 
 compile :: String -> IO (Either String String)
 compile s = mapM codeGen (parse s)
+
+compileFile :: FilePath -> IO (Either String String)
+compileFile f = parseFile f >>= \case
+  Left err -> return $ Left err
+  Right p -> Right <$> codeGen p
+

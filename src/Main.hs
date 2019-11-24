@@ -36,6 +36,9 @@ printParse s = either putStrLn println $ parse s
 printCompile :: String -> IO ()
 printCompile s = either putStrLn putStrLn =<< compile s
 
+printCompileFile :: FilePath -> IO ()
+printCompileFile f = either putStrLn putStrLn =<< compileFile f
+
 main = do
   println 0
   println . fvAnno . New 0 . New 1 . Send 0 2 . Send 1 2 $ Halt
@@ -68,3 +71,6 @@ main = do
   printParse s
   printCompile s
   printCompile "new x; match x <- y"
+  printParse "new x;\nnew y;\nloop {\nx -> y.\n}\n"
+  println . sinkNews . fvAnno . ub . New 0 . New 1 . Loop . Send 0 1 $ Halt
+  -- printCompileFile "examples/loop.pi"
