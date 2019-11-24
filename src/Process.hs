@@ -319,14 +319,10 @@ varG x = (M.! x) . fst <$> ask >>= \case
   R15 -> pure "r15"
   Spill n -> pure $ "spill" <> show' n
 
-newG :: Var -> Code
-newG x = line' $ "gt_ch " <> varG x <> " = gt_chan();"
-
-sendG :: Var -> Var -> Code
-sendG s d = line' $ "gt_write(" <> varG d <> ", " <> varG s <> ");"
-
-recvG :: Var -> Var -> Code
-recvG d s = line' $ "gt_ch " <> varG d <> " = gt_read(" <> varG s <> ");"
+declG :: Str -> Var -> Code
+declG ty x = (M.! x) . fst <$> ask >>= \case
+  Spill _ -> pure ty <> " " <> varG x
+  _ -> varG x
 
 procG :: Code -> Code -> Code
 procG name body = F.fold
@@ -335,15 +331,18 @@ procG name body = F.fold
   , line "}"
   ]
 
-spillProcG :: Code -> Set Var -> Code -> Code
-spillProcG name spilled body = procG name $ F.fold
+spillSize :: Set Var -> Int
+spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
+
+spillProcG :: Set Var -> Code -> Code -> Code
+spillProcG spilled name body = procG name $ F.fold
   [ line "gt_ch *rsp = gt_self()->rsp;"
   , F.fold . for2 [0..] (S.toAscList spilled) $ \ offset x ->
       line' $ "gt_ch " <> varG x <> " = rsp[" <> show'' offset <> "];"
   , body
-  , line $ "asm (\"addq $" <> show' spillBytes <> ", %%rsp\\t\\n\" : : : \"rsp\");"
+  , line $ "asm (\"addq $" <> show' (spillSize spilled) <> ", %%rsp\\t\\n\"" <>
+      " : : : \"rsp\");"
   ]
-  where spillBytes = 16 * ((S.size spilled + 1) `div` 2)
 
 mainG :: Code -> Code
 mainG body = F.fold
@@ -358,19 +357,62 @@ mainG body = F.fold
 
 -- -------------------- Code generation --------------------
 
--- Maintain helper functions generated along the way
-type Gen = Writer Code
+type Gen =
+  ReaderT Alloc -- Result of allocation
+  (StateT Word64 -- Fresh names for helper functions
+  (Writer Code)) -- Maintain helper functions generated along the way
 
-addHelper :: Code -> Gen ()
-addHelper = tell
+gensym :: Str -> Gen Str
+gensym name = ("var_" <>) . (name <>) . show' <$> get <* modify' succ
+
+newG :: Var -> Code
+newG x = line' $ declG "gt_ch" x <> " = gt_chan();"
+
+sendG :: Var -> Var -> Code
+sendG s d = line' $ "gt_write(" <> varG d <> ", " <> varG s <> ");"
+
+recvG :: Var -> Var -> Code
+recvG d s = line' $ declG "gt_ch" d <> " = gt_read(" <> varG s <> ");"
+
+bothG :: FVProcess -> Set Var -> FVProcess -> Gen Code
+bothG p qs q = do
+  f <- gensym "f"
+  t <- gensym "t"
+  rsp <- gensym "rsp"
+  p' <- gen p
+  q' <- gen q
+  alloc <- ask
+  let (spilled, unspilled) = S.partition (wasSpilled alloc) qs
+  let pG = if S.null spilled then procG else spillProcG spilled
+  tell $ pG (pure f) q'
+  return $ F.fold
+    [ line $ "gt_t " <> t <> " = " <> call f spilled
+    , F.fold . for (S.toAscList unspilled) $ \ v ->
+        line' $ pure t <> "->" <> varG v <> " = " <> varG v <> ";"
+    , line $ "gt_ch *" <> rsp <> " = ((gt_ch *)" <> t <> "->rsp) + 1;"
+    , F.fold . for2 [0..] (S.toAscList spilled) $ \ offset v ->
+        line' $ pure rsp <> "[" <> show'' offset <> "] = " <> varG v <> ";"
+    , p'
+    ]
+  where
+    call f spilled
+      | S.null spilled = "gt_go(" <> f <> ", 0x100000);" -- TODO: stack size
+      | otherwise = "gt_go_alloca(" <>
+          f <> ", " <>
+          show' (spillSize spilled) <> ", " <>
+          "0x100000);"
+    wasSpilled alloc q =
+      case alloc M.!? q of
+        Just (Spill _) -> True
+        _ -> False
 
 gen :: FVProcess -> Gen Code
 gen = \case
-  AHalt _ -> pure mempty
+  AHalt _ -> pure ""
   ANew _ x p -> (newG x <>) <$> gen p
   ASend _ s d p -> (sendG s d <>) <$> gen p
   ARecv _ d s p -> (recvG d s <>) <$> gen p
-  -- ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + go p + go q
+  ABoth _ p (FV qs q) -> bothG p qs q
   APick _ p q -> do
     p' <- gen p
     q' <- gen q
@@ -400,3 +442,22 @@ gen = \case
         ]
       , line $ "else {}"
       ]
+
+genTop :: FVProcess -> Gen Code
+genTop p = do
+  tell $ line "#include <stdlib.h>"
+  tell $ line "#include <runtime.c>"
+  mainG <$> gen p
+
+runGen :: Alloc -> Gen Code -> String
+runGen alloc m =
+  let (main, helpers) = runWriter $ m `runReaderT` alloc `evalStateT` 0 in
+  runCode alloc (helpers <> main)
+
+-- -------------------- AST Compilation --------------------
+
+codeGen :: Process -> IO String
+codeGen p = do
+  let p' = sinkNews . fvAnno $ ub p
+  a <- alloc p'
+  return $ runGen a (genTop p')

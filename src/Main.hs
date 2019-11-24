@@ -49,4 +49,5 @@ main = do
   testAlloc' p
   testAlloc p
   putStrLn . runCode (M.fromList [(0, Spill 3), (1, Spill 4)])
-    $ mainG (spillProcG "f" (S.fromList [0, 1]) "")
+    $ mainG (spillProcG (S.fromList [0, 1]) "f" "")
+  putStrLn =<< codeGen p

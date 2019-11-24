@@ -58,7 +58,7 @@ Register allocation
            .
       gt_ch x = gt_chan();
       gt_t q = gt_go_alloca(f, 16, MAX_STACK_SIZE);
-      q->rsp[-1] = x; // spilled x
+      ((gt_ch *)q->rsp)[1] = x; // spilled x
       q->rbx = rbx;
       rest of P
   - Now suppose {x in r12, y in rbx} in new x, P | send x to y
