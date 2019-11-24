@@ -72,5 +72,5 @@ main = do
   printCompile s
   printCompile "new x; match x <- y"
   printParse "new x;\nnew y;\nloop {\nx -> y.\n}\n"
-  println . sinkNews . fvAnno . ub . New 0 . New 1 . Loop . Send 0 1 $ Halt
-  -- printCompileFile "examples/loop.pi"
+  printCompileFile "examples/loop.pi"
+  printCompileFile "examples/loop_faulty.pi"

@@ -546,7 +546,8 @@ matchP :: Parser Process
 matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
   armP = (,) <$> varP <* symbol "=>" <*> procP
 
-procP :: Parser Process = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP]
+procP :: Parser Process
+procP = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP]
 
 parse' :: String -> String -> Either String Process
 parse' fname s =
@@ -557,7 +558,7 @@ parse :: String -> Either String Process
 parse s = parse' "" s
 
 parseFile :: FilePath -> IO (Either String Process)
-parseFile f = parse' (show f) <$> readFile f
+parseFile f = parse' f <$> readFile f
 
 -- -------------------- End-to-end compilation --------------------
 
