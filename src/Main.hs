@@ -67,10 +67,12 @@ main = do
   printGen p
   printGen . New 1 $ New 0 (Loop (Recv 2 0 Halt) :|: Loop (Send 1 0 Halt))
   printParse "new x."
-  let s = "new x; x <- y; match x { y => x -> y.\nz => y -> z. }"
+  let s = "new x y z; x <- y; match x { y => x -> y.\nz => y -> z. }"
   printParse s
   printTranspile s
   printTranspile "new x; match x <- y"
   printParse "new x;\nnew y;\nloop {\nx -> y.\n}\n"
   printTranspileFile "examples/loop.pi"
   printTranspileFile "examples/loop_faulty.pi"
+  compileFile "examples/loop.pi" "examples/out/loop.c" "examples/out/loop"
+  compileFile "examples/deadlock.pi" "examples/out/deadlock.c" "examples/out/deadlock"

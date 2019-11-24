@@ -2,6 +2,7 @@
 *.swo
 *.cabal
 .stack-work
+examples/out/*
+!examples/out/*.c
 bin
 dist
-out

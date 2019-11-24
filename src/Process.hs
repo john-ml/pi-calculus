@@ -31,6 +31,8 @@ import qualified Text.Megaparsec as P
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 
+import qualified System.Process as P
+
 type Var = Word64
 
 data Process
@@ -454,10 +456,10 @@ gen = \case
       ]
 
 genTop :: FVProcess -> Gen Code
-genTop p = do
+genTop (FV vs p) = do
   tell $ line "#include <stdlib.h>"
   tell $ line "#include \"runtime.c\""
-  mainG <$> gen p
+  mainG <$> gen (ABoth vs (AHalt S.empty) p)
 
 runGen :: Alloc -> Gen Code -> String
 runGen alloc m =
@@ -474,7 +476,12 @@ codeGen p = do
 
 -- -------------------- Parsing utils --------------------
 
-type Parser = ParsecT Void String (State (Map String Word64))
+newtype PError = PError String deriving (Eq, Ord)
+
+type Parser = ParsecT PError String (State (Map String Word64))
+
+instance P.ShowErrorComponent PError where
+  showErrorComponent (PError s) = s
 
 sc :: Parser ()
 sc = L.space space1 empty empty
@@ -508,26 +515,32 @@ word = do
   guard . not $ s `elem` keywords
   return s
 
-varP :: Parser Var
-varP = do
+varP' :: Bool -> Parser Var
+varP' strict = do
   x <- word
   (M.!? x) <$> get >>= \case
+    Nothing | strict ->
+      P.customFailure . PError $ "Variable not in scope: " ++ x
     Nothing -> do
       n <- fromIntegral . M.size <$> get
       modify' (M.insert x n)
       return n
     Just n -> return n
 
+varP :: Parser Var = varP' True
+
+bindP :: Parser Var = varP' False
+
 haltP :: Parser Process = Halt <$ symbol "."
 
 contP :: Parser Process = P.try haltP <|> symbol ";" *> procP
 
-newP :: Parser Process = symbol "new" >> mkNew <$> some varP <*> contP where
+newP :: Parser Process = symbol "new" >> mkNew <$> some bindP <*> contP where
   mkNew xs p = foldr New p xs
 
 sendP :: Parser Process = Send <$> varP <* symbol "->" <*> varP <*> contP
 
-recvP :: Parser Process = Recv <$> varP <* symbol "<-" <*> varP <*> contP
+recvP :: Parser Process = Recv <$> bindP <* symbol "<-" <*> varP <*> contP
 
 binopP :: String -> (Process -> Process -> Process) -> Parser Process
 binopP keyword op = symbol keyword >> mk <$> braces (many procP) where
@@ -569,3 +582,18 @@ transpileFile :: FilePath -> IO (Either String String)
 transpileFile f = parseFile f >>= \case
   Left err -> return $ Left err
   Right p -> Right <$> codeGen p
+
+-- -------------------- Full compilation --------------------
+
+compile :: String -> FilePath -> FilePath -> IO ()
+compile s cOut binOut = transpile s >>= \case
+  Left err -> putStrLn err
+  Right c -> do
+    writeFile cOut c
+    P.createProcess (P.proc "gcc" ["-I", "src", "src/gt_switch.s", cOut, "-o", binOut])
+    return ()
+
+compileFile :: FilePath -> FilePath -> FilePath -> IO ()
+compileFile piIn cOut binOut = do
+  s <- readFile piIn
+  compile s cOut binOut
