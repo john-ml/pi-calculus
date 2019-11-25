@@ -1,3 +1,9 @@
+TODO
+- Connecting to C code using read/write handlers
+- Parallelism
+- GC of dead channels (and threads)?
+- Type system?
+
 IO/primitives
 - No types for now (many complications!)
 - u64, u64 math, "match" works on u64 as well as channels
