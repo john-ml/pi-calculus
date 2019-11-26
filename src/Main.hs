@@ -72,7 +72,7 @@ tests = do
   printParse s
   printTranspile s
   printTranspile "new x; match x <- y"
-  printParse "new x;\nnew y;\nloop {\nx -> y.\n}\n"
+  printParse "new x;\nnew y;\nloop \nx -> y.\n\n"
   printTranspileFile "examples/loop.pi"
   printTranspileFile "examples/loop_faulty.pi"
   compileFile "examples/loop.pi" "examples/out/loop.c" "examples/out/loop"

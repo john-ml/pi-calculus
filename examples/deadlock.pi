@@ -1,5 +1,5 @@
 new x y;
 all {
-  loop { x -> y. }
-  loop { z <- x. }
+  loop x -> y.
+  loop z <- x.
 }

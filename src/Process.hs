@@ -564,7 +564,7 @@ anyP :: Parser Process = binopP "any" (:+:)
 
 allP :: Parser Process = binopP "all" (:|:)
 
-loopP :: Parser Process = symbol "loop" >> Loop <$> braces procP
+loopP :: Parser Process = symbol "loop" >> Loop <$> procP
 
 matchP :: Parser Process
 matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where

@@ -20,8 +20,8 @@ IO/primitives
   Then, for example, can have:
   - new stdin stdout;
     all {
-      loop { foreign c <- stdout { fputc(c, stdout); }. }
-      loop { foreign { return fgetc(stdin); } -> stdin. }
+      loop foreign c <- stdout { fputc(c, stdout); }.
+      loop foreign { return fgetc(stdin); } -> stdin.
     }
   But now this might block forever b/c fgetc isn't async.
 - Ideally:
