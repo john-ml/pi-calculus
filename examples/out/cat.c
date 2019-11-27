@@ -1,30 +1,30 @@
 #include <stdlib.h>
 #include "runtime.c"
 gt_ch global5;
-void var_r3(gt_ch c) {
-  putchar((int)(long)c); 
-}
-void var_h4(void) {
+struct handler_extra var_extra5;
+void var_handler3(gt_ch c)
+{ putchar((int)(long)c); }
+void var_listener4(void) {
   for (;;) {
-    var_r3(gt_read(global5));
-    gt_yield();
+    var_handler3((gt_ch)var_extra5.info);
+    gt_t t = current;
+    gt_switch(t, current = var_extra5.cause);
   }
 }
 gt_ch global4;
-gt_ch var_w5(void) {
-  return (gt_ch)(long)getchar(); 
-}
-void var_h6(void) {
+struct handler_extra var_extra8;
+gt_ch var_handler6(void)
+{ return (gt_ch)(long)getchar(); }
+void var_listener7(void) {
   for (;;) {
-    gt_write(global4, var_w5());
-    gt_yield();
+    *(gt_ch *)var_extra8.info = var_handler6();
+    gt_t t = current;
+    gt_switch(t, current = var_extra8.cause);
   }
 }
 void var_f0(void) {
-  global4 = gt_chan();
-  gt_go(var_h6, 0x10000);
-  global5 = gt_chan();
-  gt_go(var_h4, 0x10000);
+  global4 = gt_read_only_chan(var_listener7, &var_extra8, 0x100000);
+  global5 = gt_write_only_chan(var_listener4, &var_extra5, 0x100000);
   for (;;) {
     r15 = gt_read(global4);
     gt_write(global5, r15);

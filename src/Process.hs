@@ -425,8 +425,10 @@ gensym name = ("var_" <>) . (name <>) . show' <$> get <* modify' succ
 newG :: Var -> Code
 newG x = line' $ declG "gt_ch" x <> " = gt_chan();"
 
-gnewG :: Var -> Code
-gnewG x = line' $ varG x <> " = gt_chan();"
+gnewG :: Str -> Str -> Str -> Var -> Code
+gnewG mode listener extra x =
+  line' $ varG x <> " = gt_" <> pure mode <> "_chan(" <>
+    pure listener <> ", &" <> pure extra <> ", 0x100000);"
 
 sendG :: Var -> Var -> Code
 sendG s d = line' $ "gt_write(" <> varG d <> ", " <> varG s <> ");"
@@ -515,49 +517,55 @@ gen = \case
       ]
   AOnRead _ x body p -> do
     p' <- gen p
-    w <- gensym "w"
-    h <- gensym "h"
+    handler <- gensym "handler"
+    listener <- gensym "listener"
+    extra <- gensym "extra"
     tell $ F.fold
       [ line' $ "gt_ch " <> varG x <> ";"
-      , line $ "gt_ch " <> w <> "(void) {"
-      , F.fold $ indent . line . D.fromList <$> lines body
-      , line "}"
-      , line $ "void " <> h <> "(void) {"
+      , line $ "struct handler_extra " <> extra <> ";"
+      , line $ "gt_ch " <> handler <> "(void)"
+      , F.fold $ line . D.fromList <$> lines body
+      , line $ "void " <> listener <> "(void) {"
       , indent $ F.fold
         [ line $ "for (;;) {"
-        , indent . line' $ "gt_write(" <> varG x <> ", " <> pure w <> "());"
-        , indent . line $ "gt_yield();"
+        , indent $ F.fold
+          [ line $ "*(gt_ch *)" <> extra <> ".info = " <> handler <> "();"
+          , line $ "gt_t t = current;"
+          , line $ "gt_switch(t, current = " <> extra <> ".cause);"
+          ]
         , line "}"
         ]
       , line "}"
       ]
     return $ F.fold
-      [ gnewG x
-      , line $ "gt_go(" <> h <> ", 0x10000);"
+      [ gnewG "read_only" listener extra x
       , p'
       ]
   AOnWrite _ v x body p -> do
     let v' = D.fromList v
     p' <- gen p
-    r <- gensym "r"
-    h <- gensym "h"
+    handler <- gensym "handler"
+    listener <- gensym "listener"
+    extra <- gensym "extra"
     tell $ F.fold
       [ line' $ "gt_ch " <> varG x <> ";"
-      , line $ "void " <> r <> "(gt_ch " <> v' <> ") {"
-      , F.fold $ indent . line . D.fromList <$> lines body
-      , line "}"
-      , line $ "void " <> h <> "(void) {"
+      , line $ "struct handler_extra " <> extra <> ";"
+      , line $ "void " <> handler <> "(gt_ch " <> v' <> ")"
+      , F.fold $ line . D.fromList <$> lines body
+      , line $ "void " <> listener <> "(void) {"
       , indent $ F.fold
         [ line $ "for (;;) {"
-        , indent . line' $ pure r <> "(gt_read(" <> varG x <> "));"
-        , indent . line $ "gt_yield();"
+        , indent $ F.fold
+          [ line $ handler <> "((gt_ch)" <> extra <> ".info);"
+          , line $ "gt_t t = current;"
+          , line $ "gt_switch(t, current = " <> extra <> ".cause);"
+          ]
         , line "}"
         ]
       , line "}"
       ]
     return $ F.fold
-      [ gnewG x
-      , line $ "gt_go(" <> h <> ", 0x10000);"
+      [ gnewG "write_only" listener extra x
       , p'
       ]
 
@@ -668,16 +676,18 @@ matchP :: Parser Process
 matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
   armP = (,) <$> varP <* symbol "=>" <*> procP
 
-foreignP = symbol "{" >> bodyP 0 where
-  bodyP n = (++) <$> P.takeWhileP Nothing nonBrace <*> suffix n
-  suffix n = tryAll
-    [ symbol "{" >> ("{" ++) <$> bodyP (n + 1)
-    , symbol "}" >> if n == 0 then pure "" else ("}" ++) <$> bodyP (n - 1)
+foreignP = bodyP 0 where
+  suffix n = (++) <$> P.takeWhileP Nothing nonBrace <*> bodyP n
+  bodyP n = tryAll
+    [ (++) <$> string "{" <*> suffix (n + 1)
+    , (++) <$> string "}"
+        <*> if n == 1 then sc $> "" else (++) <$> spaces <*> suffix (n - 1)
     ]
   nonBrace = \case
     '{' -> False
     '}' -> False
     _ -> True
+  spaces = P.takeWhileP Nothing isSpace
 
 onReadP :: Parser Process
 onReadP = symbol "foreign" >> symbol "<-" >> OnRead <$> bindP <*> foreignP <*> procP
@@ -718,7 +728,7 @@ compile s cOut binOut = transpile s >>= \case
   Left err -> putStrLn err
   Right c -> do
     writeFile cOut c
-    let flags = ["-O2", "-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
+    let flags = ["-O2", "-g", "-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
     P.createProcess (P.proc "gcc" flags)
     return ()
 
