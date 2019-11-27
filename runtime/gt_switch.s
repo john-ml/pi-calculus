@@ -1,6 +1,6 @@
-.globl _gt_switch_asm, gt_switch_asm
-_gt_switch_asm:
-gt_switch_asm:
+.globl _gt_switch, gt_switch
+_gt_switch:
+gt_switch:
   mov %rsp, 0x00(%rdi)
   mov %rbx, 0x08(%rdi)
   mov %rbp, 0x10(%rdi)

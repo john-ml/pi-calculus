@@ -83,6 +83,7 @@ tests = do
               $ Halt)
   writeFile "examples/out/spills_generated.c" =<< codeGen' False r
   compileFile "examples/cat.pi" "examples/out/cat.c" "examples/out/cat"
+  compileFile "examples/add.pi" "examples/out/add.c" "examples/out/add"
 
 main = getArgs >>= \case
   ["test"] -> tests

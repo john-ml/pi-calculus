@@ -1,5 +1,5 @@
-foreign <- stdin { return (gt_ch)(long)fgetc(stdin); }
-foreign c -> stdout { fputc((int)(long)c, stdout); }
+foreign <- stdin { return (gt_ch)(long)getchar(); }
+foreign c -> stdout { putchar((int)(long)c); }
 loop
   c <- stdin;
   c -> stdout.

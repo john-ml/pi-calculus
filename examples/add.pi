@@ -1,0 +1,28 @@
+foreign ch -> adder {
+  gt_ch res = gt_read(ch);
+  gt_write(res, (gt_ch)((uint64_t)gt_read(ch) + (uint64_t)gt_read(ch)));
+}
+foreign <- stdin_i32 {
+  int n = 0;
+  int c;
+  do {
+    c = getchar();
+  } while (c == '\n' || c == ' ');
+  while ('0' <= c && c <= '9') {
+    n = 10*n + (c - '0');
+    c = getchar();
+  }
+  return (gt_ch)(long)n;
+}
+foreign c -> stdout_i32 {
+  printf("%d\n", (int)(long)c);
+}
+x <- stdin_i32;
+y <- stdin_i32;
+new xy res;
+xy -> adder;
+res -> xy;
+x -> xy;
+y -> xy;
+result <- res;
+result -> stdout_i32.

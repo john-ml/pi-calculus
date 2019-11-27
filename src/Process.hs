@@ -526,6 +526,7 @@ gen = \case
       , indent $ F.fold
         [ line $ "for (;;) {"
         , indent . line' $ "gt_write(" <> varG x <> ", " <> pure w <> "());"
+        , indent . line $ "gt_yield();"
         , line "}"
         ]
       , line "}"
@@ -549,6 +550,7 @@ gen = \case
       , indent $ F.fold
         [ line $ "for (;;) {"
         , indent . line' $ pure r <> "(gt_read(" <> varG x <> "));"
+        , indent . line $ "gt_yield();"
         , line "}"
         ]
       , line "}"
@@ -618,7 +620,7 @@ keywords = ["new", "all", "any", "loop", "match"]
 
 word :: Parser String
 word = do
-  s <- lexeme $ some alphaNumChar
+  s <- lexeme $ some (alphaNumChar <|> char '_')
   guard . not $ s `elem` keywords
   return s
 
@@ -666,7 +668,16 @@ matchP :: Parser Process
 matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
   armP = (,) <$> varP <* symbol "=>" <*> procP
 
-foreignP = symbol "{" >> P.takeWhileP Nothing (/= '}') <* symbol "}"
+foreignP = symbol "{" >> bodyP 0 where
+  bodyP n = (++) <$> P.takeWhileP Nothing nonBrace <*> suffix n
+  suffix n = tryAll
+    [ symbol "{" >> ("{" ++) <$> bodyP (n + 1)
+    , symbol "}" >> if n == 0 then pure "" else ("}" ++) <$> bodyP (n - 1)
+    ]
+  nonBrace = \case
+    '{' -> False
+    '}' -> False
+    _ -> True
 
 onReadP :: Parser Process
 onReadP = symbol "foreign" >> symbol "<-" >> OnRead <$> bindP <*> foreignP <*> procP

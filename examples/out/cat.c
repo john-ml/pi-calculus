@@ -2,20 +2,22 @@
 #include "runtime.c"
 gt_ch global5;
 void var_r3(gt_ch c) {
-  fputc((int)(long)c, stdout); 
+  putchar((int)(long)c); 
 }
 void var_h4(void) {
   for (;;) {
     var_r3(gt_read(global5));
+    gt_yield();
   }
 }
 gt_ch global4;
 gt_ch var_w5(void) {
-  return (gt_ch)(long)fgetc(stdin); 
+  return (gt_ch)(long)getchar(); 
 }
 void var_h6(void) {
   for (;;) {
     gt_write(global4, var_w5());
+    gt_yield();
   }
 }
 void var_f0(void) {
