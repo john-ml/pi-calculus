@@ -1,7 +1,7 @@
 module Process where
 
 import qualified Data.List as L
-import Data.Set (Set, (\\)); import qualified Data.Set as S
+import Data.Set (Set); import qualified Data.Set as S
 import Data.Map.Strict (Map); import qualified Data.Map.Strict as M
 import Data.Semigroup
 import qualified Data.Foldable as F
@@ -44,6 +44,8 @@ data Process
   | Process :+: Process
   | Loop Process
   | Match Var [(Var, Process)]
+  | OnRead Var String Process
+  | OnWrite String Var String Process
   deriving (Eq, Ord, Show)
 
 makeBaseFunctor ''Process
@@ -61,6 +63,9 @@ for2 xs ys f = zipWith f xs ys
 
 (∪) :: Ord a => Set a -> Set a -> Set a
 (∪) = S.union
+
+(∩) :: Ord a => Set a -> Set a -> Set a
+(∩) = S.union
 
 (∈) :: Ord a => a -> Set a -> Bool
 (∈) = S.member
@@ -90,6 +95,8 @@ anno f = cata $ \ p ->
     Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
     LoopF (Anno a _) -> ann (f (LoopF a))
     MatchF x arms -> ann (f (MatchF x (map (\ (y, Anno a _) -> (y, a)) arms)))
+    OnReadF x body (Anno a _) -> ann (f (OnReadF x body a))
+    OnWriteF v x body (Anno a _) -> ann (f (OnWriteF v x body a))
 
 unanno :: Fix (AnnoF a (Base Process)) -> Process
 unanno = hoist (snd . getCompose)
@@ -105,6 +112,8 @@ pattern APick a p q = Anno a (p :+:$ q)
 pattern ALoop a p = Anno a (LoopF p)
 pattern AMatch a x arms = Anno a (MatchF x arms)
 pattern AMatch' a x ys ps <- Anno a (MatchF x (L.unzip -> (ys, ps)))
+pattern AOnRead a ch body p = Anno a (OnReadF ch body p)
+pattern AOnWrite a v x body p = Anno a (OnWriteF v x body p)
 
 -- -------------------- Variables --------------------
 
@@ -119,6 +128,8 @@ foldVars m = cata $ \case
   mx :+:$ my -> mx <> my
   LoopF mx -> mx
   MatchF x (L.unzip -> (ys, mzs)) -> mconcat (m x : map m ys ++ mzs)
+  OnReadF ch _ mx -> m ch <> mx
+  OnWriteF _ ch _ mx -> m ch <> mx
 
 -- Smallest variable v such that {v + 1, v + 2, ..} are all unused
 maxUsed :: Process -> Var
@@ -127,6 +138,20 @@ maxUsed = getMax . foldVars Max
 -- Used variables
 uv :: Process -> Set Var
 uv = foldVars S.singleton
+
+-- Used locals
+locals :: Process -> Set Var
+locals = cata $ \case
+  HaltF -> S.empty
+  NewF x vs -> S.insert x vs
+  SendF s d vs -> S.insert s (S.insert d vs)
+  RecvF d s vs -> S.insert s (S.insert d vs)
+  vs :|:$ ws -> vs ∪ ws
+  vs :+:$ ws -> vs ∪ ws
+  LoopF vs -> vs
+  MatchF x (L.unzip -> (xs, vss)) -> S.fromList (x : xs) ∪ F.fold vss
+  OnReadF x _ vs -> S.delete x vs
+  OnWriteF _ x _ vs -> S.delete x vs
 
 -- Rename bound variables for unique bindings
 ub :: Process -> Process
@@ -140,6 +165,8 @@ ub p = go M.empty p `evalState` maxUsed p where
     p :+: q -> liftA2 (:+:) (go σ p) (go σ q)
     Loop p -> Loop <$> go σ p
     Match x yps -> Match (σ ! x) <$> mapM (\ (y, p) -> (σ ! y,) <$> go σ p) yps
+    OnRead x body p -> do x' <- gen; OnRead x' body <$> go (M.insert x x' σ) p
+    OnWrite v x body p -> do x' <- gen; OnWrite v x' body <$> go (M.insert x x' σ) p
   σ ! x = M.findWithDefault x x σ
   gen = modify' succ *> get
 
@@ -154,6 +181,8 @@ fvF = \case
   vs :+:$ ws -> vs ∪ ws
   LoopF vs -> vs
   MatchF x (L.unzip -> (xs, vss)) -> S.fromList (x : xs) ∪ F.fold vss
+  OnReadF x _ vs -> S.delete x vs
+  OnWriteF _ x _ vs -> S.delete x vs
 
 fv :: Process -> Set Var
 fv = cata fvF
@@ -181,6 +210,8 @@ sinkNews = fixed . fix $ \ go ->
     ANew vs x (APick ws (FV ps p) (FV qs q)) -> APick vs <$> rec x ps p <*> rec x qs q
     ANew vs x (AMatch _ y arms) | x `L.notElem` (y : map fst arms) ->
       AMatch vs y <$> mapM (mapM (\ (FV ps p) -> rec x ps p)) arms
+    ANew vs x (AOnRead _ y body (FV ps p)) -> AOnRead vs y body <$> rec' x ps p
+    ANew vs x (AOnWrite _ v y body (FV ps p)) -> AOnWrite vs v y body <$> rec' x ps p
     p -> tell (Any False) $> p
 
 -- -------------------- Register allocation --------------------
@@ -193,18 +224,21 @@ clique xs = S.fromList [x :/=: y | x : ys <- L.tails (S.toList xs), y <- ys]
 
 -- Collect interference constraints
 constraints :: FVProcess -> Set Constraint
-constraints = go S.empty where
-  go s = \case
+constraints = go S.empty S.empty where
+  go g s = \case
     AHalt (clique' -> vs) -> vs
-    ANew (clique' -> vs) _ p -> vs ∪ go s p
-    ASend (clique' -> vs) _ _ p -> vs ∪ go s p
-    ARecv (clique' -> vs) _ _ p -> vs ∪ go s p
-    ABoth (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
-    APick (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
-    -- The tricky one: whatever is live now must still be live throughout body
-    ALoop s'@(clique' -> vs) p -> vs ∪ go (s ∪ s') p 
-    AMatch' (clique' -> vs) _ _ ps -> vs ∪ foldMap (go s) ps
-    where clique' xs = clique $ s ∪ xs
+    ANew (clique' -> vs) _ p -> vs ∪ go g s p
+    ASend (clique' -> vs) _ _ p -> vs ∪ go g s p
+    ARecv (clique' -> vs) _ _ p -> vs ∪ go g s p
+    ABoth (clique' -> vs) p q -> vs ∪ go g s p ∪ go g s q
+    APick (clique' -> vs) p q -> vs ∪ go g s p ∪ go g s q
+    -- Tricky case 1: whatever is live now must still be live throughout body
+    ALoop s'@(clique' -> vs) p -> vs ∪ go g (s ∪ s') p 
+    AMatch' (clique' -> vs) _ _ ps -> vs ∪ foldMap (go g s) ps
+    -- Tricky case(s) 2: exclude globals from the analysis
+    AOnRead (clique' -> vs) x _ p -> vs ∪ go (S.insert x g) s p
+    AOnWrite (clique' -> vs) _ x _ p -> vs ∪ go (S.insert x g) s p
+    where clique' xs = clique $ (s ∪ xs) S.\\ g
 
 -- Expected number of forks that happen in a variable's lifetime
 forks :: Var -> FVProcess -> Double
@@ -217,15 +251,20 @@ forks x = fix $ \ go -> \case
   APick _ p q -> go p / 2 + go q / 2
   ALoop _ p -> 100 * go p
   AMatch' _ _ _ ps -> maximum (0 : map go ps)
+  AOnRead _ _ _ p -> go p
+  AOnWrite _ _ _ _ p -> go p
 
--- The variables in a process, sorted in increasing order by forks
-sortedVars :: FVProcess -> [Var]
-sortedVars p = L.sortOn (`forks` p) (S.toList (uv (unanno p)))
+-- The allocable variables in a process, sorted in increasing order by forks
+sortedLocals :: FVProcess -> [Var]
+sortedLocals p = L.sortOn (`forks` p) (S.toList (locals (unanno p)))
 
 varName :: Var -> String
 varName x = "x" ++ show x
 
-data Register = Rbx | R12 | R13 | R14 | R15 | Spill Word64 deriving (Eq, Ord, Show)
+data Register
+  = Rbx | R12 | R13 | R14 | R15
+  | Spill Word64
+  | Global deriving (Eq, Ord, Show)
 type Alloc = Map Var Register
 
 intOfReg :: Register -> Word64
@@ -233,6 +272,9 @@ intOfReg = \case Rbx -> 0; R12 -> 1; R13 -> 2; R14 -> 3; R15 -> 4; Spill n -> n 
 
 regOfWord64 :: Word64 -> Register
 regOfWord64 = \case 0 -> Rbx; 1 -> R12; 2 -> R13; 3 -> R14; 4 -> R15; n -> Spill (n - 5)
+
+(!) :: Alloc -> Var -> Register
+m ! x = maybe Global id (m M.!? x)
 
 spill :: Word64 -> Register
 spill n = Spill (n + 5)
@@ -289,7 +331,7 @@ allocWith vars interference = runSMT . runMaybeT $ do
       tryAlloc sp unsp slots interference
 
 alloc' :: Bool -> FVProcess -> IO Alloc
-alloc' True p = allocWith (sortedVars p) (constraints p) >>= \case
+alloc' True p = allocWith (sortedLocals p) (constraints p) >>= \case
   Nothing -> error $ "Register allocation failed."
   Just m -> return m
 alloc' False p = return . M.fromList $ zip (S.toList . uv $ unanno p) (Spill <$> [0..])
@@ -329,16 +371,17 @@ line' l = reader $ \ r@(_, s) -> s <> runReader l r <> "\n"
 -- -------------------- Code generation utils --------------------
 
 varG :: Var -> Code
-varG x = (M.! x) . fst <$> ask >>= \case
+varG x = (! x) . fst <$> ask >>= \case
   Rbx -> pure "rbx"
   R12 -> pure "r12"
   R13 -> pure "r13"
   R14 -> pure "r14"
   R15 -> pure "r15"
   Spill n -> pure $ "spill" <> show' n
+  Global -> pure $ "global" <> show' x
 
 declG :: Str -> Var -> Code
-declG ty x = (M.! x) . fst <$> ask >>= \case
+declG ty x = (! x) . fst <$> ask >>= \case
   Spill _ -> pure ty <> " " <> varG x
   _ -> varG x
 
@@ -349,12 +392,6 @@ procG name body = F.fold
   , indent $ line "asm (\"jmp gt_stop\\t\\n\");"
   , line "}"
   ]
-
-spillSize :: Set Var -> Int
-spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
-
-stackSize :: Set Var -> Int
-stackSize spilled = 64 + spillSize spilled
 
 spillProcG :: Set Var -> Code -> Code -> Code
 spillProcG spilled name body = procG name $ F.fold
@@ -388,11 +425,23 @@ gensym name = ("var_" <>) . (name <>) . show' <$> get <* modify' succ
 newG :: Var -> Code
 newG x = line' $ declG "gt_ch" x <> " = gt_chan();"
 
+gnewG :: Var -> Code
+gnewG x = line' $ varG x <> " = gt_chan();"
+
 sendG :: Var -> Var -> Code
 sendG s d = line' $ "gt_write(" <> varG d <> ", " <> varG s <> ");"
 
 recvG :: Var -> Var -> Code
 recvG d s = line' $ declG "gt_ch" d <> " = gt_read(" <> varG s <> ");"
+
+spillSize :: Set Var -> Int
+spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
+
+stackSize :: Set Var -> Gen Int
+stackSize spilled = do
+  alloc <- M.keysSet <$> ask
+  let baseSize = if S.null (spilled ∩ alloc) then 64 else 512
+  return $ baseSize + spillSize spilled
 
 bothG :: FVProcess -> Set Var -> FVProcess -> Gen Code
 bothG p qs q = do
@@ -402,8 +451,19 @@ bothG p qs q = do
   p' <- gen p
   q' <- gen q
   alloc <- ask
-  let (spilled, unspilled) = S.partition (wasSpilled alloc) qs
-  let pG = if S.null spilled then procG else spillProcG spilled
+  let 
+    (spilled, unspilled) = S.partition (wasSpilled alloc) qs
+    wasSpilled alloc q =
+      case alloc M.!? q of
+        Just (Spill _) -> True
+        _ -> False
+  size <- show' <$> stackSize spilled
+  let
+    pG = if S.null spilled then procG else spillProcG spilled
+    call f spilled
+      | S.null spilled = "gt_go(" <> f <> ", " <> size <> ");"
+      | otherwise = "gt_go_alloca(" <>
+          f <> ", " <> show' (spillSize spilled) <> ", " <> size <> ");"
   tell $ pG (pure f) q'
   return $ F.fold
     [ line $ "gt_t " <> t <> " = " <> call f spilled
@@ -417,15 +477,6 @@ bothG p qs q = do
     , p'
     ]
   where
-    call f spilled
-      | S.null spilled = "gt_go(" <> f <> ", " <> show' (stackSize spilled) <> ");"
-      | otherwise = "gt_go_alloca(" <>
-          f <> ", " <> show' (spillSize spilled) <> ", " <>
-          show' (stackSize spilled) <> ");"
-    wasSpilled alloc q =
-      case alloc M.!? q of
-        Just (Spill _) -> True
-        _ -> False
 
 gen :: FVProcess -> Gen Code
 gen = \case
@@ -461,6 +512,51 @@ gen = \case
         , indent p'
         , line "}"
         ]
+      ]
+  AOnRead _ x body p -> do
+    p' <- gen p
+    w <- gensym "w"
+    h <- gensym "h"
+    tell $ F.fold
+      [ line' $ "gt_ch " <> varG x <> ";"
+      , line $ "gt_ch " <> w <> "(void) {"
+      , F.fold $ indent . line . D.fromList <$> lines body
+      , line "}"
+      , line $ "void " <> h <> "(void) {"
+      , indent $ F.fold
+        [ line $ "for (;;) {"
+        , indent . line' $ "gt_write(" <> varG x <> ", " <> pure w <> "());"
+        , line "}"
+        ]
+      , line "}"
+      ]
+    return $ F.fold
+      [ gnewG x
+      , line $ "gt_go(" <> h <> ", 0x10000);"
+      , p'
+      ]
+  AOnWrite _ v x body p -> do
+    let v' = D.fromList v
+    p' <- gen p
+    r <- gensym "r"
+    h <- gensym "h"
+    tell $ F.fold
+      [ line' $ "gt_ch " <> varG x <> ";"
+      , line $ "void " <> r <> "(gt_ch " <> v' <> ") {"
+      , F.fold $ indent . line . D.fromList <$> lines body
+      , line "}"
+      , line $ "void " <> h <> "(void) {"
+      , indent $ F.fold
+        [ line $ "for (;;) {"
+        , indent . line' $ pure r <> "(gt_read(" <> varG x <> "));"
+        , line "}"
+        ]
+      , line "}"
+      ]
+    return $ F.fold
+      [ gnewG x
+      , line $ "gt_go(" <> h <> ", 0x10000);"
+      , p'
       ]
 
 genTop :: FVProcess -> Gen Code
@@ -570,8 +666,18 @@ matchP :: Parser Process
 matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
   armP = (,) <$> varP <* symbol "=>" <*> procP
 
+foreignP = symbol "{" >> P.takeWhileP Nothing (/= '}') <* symbol "}"
+
+onReadP :: Parser Process
+onReadP = symbol "foreign" >> symbol "<-" >> OnRead <$> bindP <*> foreignP <*> procP
+
+onWriteP :: Parser Process
+onWriteP =
+  symbol "foreign" >>
+  OnWrite <$> word <* symbol "->" <*> bindP <*> foreignP <*> procP
+
 procP :: Parser Process
-procP = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP]
+procP = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP, onReadP, onWriteP]
 
 parse' :: String -> String -> Either String Process
 parse' fname s =

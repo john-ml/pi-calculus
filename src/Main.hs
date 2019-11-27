@@ -82,6 +82,7 @@ tests = do
             (Send 0 6 . Send 1 6 . Send 2 6 . Send 3 6 . Send 4 6 . Send 5 6
               $ Halt)
   writeFile "examples/out/spills_generated.c" =<< codeGen' False r
+  compileFile "examples/cat.pi" "examples/out/cat.c" "examples/out/cat"
 
 main = getArgs >>= \case
   ["test"] -> tests

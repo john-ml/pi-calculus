@@ -6,7 +6,7 @@
 " syn match   piType /\<F\d\+\>/
 
 " Keywords.
-syn keyword piKeyword new all any loop match
+syn keyword piKeyword new all any loop match foreign
 syn match piKeyword /->\|<-/
 " syn match piSymbol /[.~?&∈,;—@★{}()\[\]:≡=<>+*/\\|-]/
 

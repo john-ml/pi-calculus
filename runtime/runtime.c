@@ -2,7 +2,7 @@
 
 // #define NDEBUG // no asserts
 #define NPRINTFDEBUG // no debug logs
-#define GT_CHAN_SIZE 0x10 // size of channel ring buffer
+#define GT_CHAN_SIZE 0x2 // size of channel ring buffer
 #define INLINE_STACK_SIZE 128 // max size of thread stack that doesn't need malloc
 
 // -----------------------------------------------------------------------------

@@ -108,6 +108,36 @@ IO/primitives
     the forwarding loop will win, read a value from C land through ch', and send it to ch.
   - This way the pi calc and non pi calc worlds are nicely separated and there's a way to
     unseparate them if really needed.
+  - Maybe it's better to bundle the foreign handlers together?
+      gt_ch adder;
+      gt_ch stdin_int;
+      gt_ch stdout_int;
+      void adder_handler(gt_ch ch) {
+        gt_write(ch, (gt_ch)((uint64_t)gt_read(ch) + (uint64_t)gt_read(ch)));
+      }
+      gt_ch stdin_int_handler(void) {
+        int c;
+        scanf("%d", &c);
+        return (gt_ch)c;
+      }
+      void stdout_int_handler(gt_ch c) {
+        printf("%d", (int)c);
+      }
+      void foreign_loop(void) {
+        for (;;) {
+          adder_handler(gt_read(adder));
+          gt_yield();
+          gt_write(stdin_int, stdin_int_handler());
+          gt_yield();
+          stdout_int_handler(gt_read(stdout_int));
+          gt_yield();
+        }
+      }
+    Then later, in main:
+      adder = gt_chan();
+      stdin_int = gt_chan();
+      stdout_int = gt_chan();
+      gt_go(foreign_loop, 0x10000);
 
 Compilation
 - FV for liveness analysis
