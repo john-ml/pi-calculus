@@ -392,8 +392,8 @@ gt_val gt_read(gt_ch c) {
     return (gt_val)r;
   case GT_CH_READ_ONLY:
     c->as.read_only.handler.extra->info = &c->as.read_only.res;
-    c->as.read_only.handler.extra->cause = current;
-    gt_switch(current, c->as.read_only.handler.t);
+    gt_t t = c->as.read_only.handler.extra->cause = current;
+    gt_switch(t, current = c->as.read_only.handler.t);
     return c->as.read_only.res;
   case GT_CH_WRITE_ONLY:
     assert(0 && "gt_read: reading from write-only channel");
@@ -417,12 +417,11 @@ void gt_write(gt_ch c, gt_val v) {
   case GT_CH_READ_ONLY:
     assert(0 && "gt_write: writing to read-only channel");
     return;
-  case GT_CH_WRITE_ONLY: {
+  case GT_CH_WRITE_ONLY:
     c->as.write_only.extra->info = v;
     gt_t t = c->as.write_only.extra->cause = current;
     gt_switch(t, current = c->as.write_only.t);
     return;
-  }
   default: return;
   }
 }
@@ -435,20 +434,22 @@ void gt_dump(void) {
   debugs("");
   debugf("  channels (%lu total):\n", channels_end - channels);
   for (size_t i = 0; i < channels_end - channels; ++i) {
-    debugf("    %lu: %s\n", i, !channels[i].next ? "ON" : "OFF");
-    debugf("      readers: ");
-    for (gt_t id = channels[i].as.normal.readers.front; id; id = id->next)
-      debugf("%lu ", id - threads);
-    debugs("");
-    debugf("      values: ");
-    for (size_t j = channels[i].as.normal.first;
-         j != channels[i].as.normal.last;
-         j = gt_ch_succ(j))
-      debugf("%lu ", channels[i].as.normal.values[j] - channels);
-    debugs("");
-    debugf("      writers: ");
-    for (gt_t id = channels[i].as.normal.writers.front; id; id = id->next)
-      debugf("%lu ", id - threads);
-    debugs("");
+    if (channels[i].tag == GT_CH_NORMAL) {
+      debugf("    %lu: %s\n", i, !channels[i].next ? "ON" : "OFF");
+      debugf("      readers: ");
+      for (gt_t id = channels[i].as.normal.readers.front; id; id = id->next)
+        debugf("%lu ", id - threads);
+      debugs("");
+      debugf("      values: ");
+      for (size_t j = channels[i].as.normal.first;
+           j != channels[i].as.normal.last;
+           j = gt_ch_succ(j))
+        debugf("%lu ", channels[i].as.normal.values[j] - channels);
+      debugs("");
+      debugf("      writers: ");
+      for (gt_t id = channels[i].as.normal.writers.front; id; id = id->next)
+        debugf("%lu ", id - threads);
+      debugs("");
+    }
   }
 }
