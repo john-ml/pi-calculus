@@ -13,6 +13,12 @@ gt_val read_int(void) {
   return (gt_val)(long)n;
 }
 
+// gt_val read_int(void) {
+//   int c;
+//   scanf("%d", &c);
+//   return (gt_val)(long)c;
+// }
+
 void write_int(gt_val c) { printf("%d\n", (int)(long)c); }
 
 gt_val add(gt_val x, gt_val y) { return (gt_val)((long)x + (long)y); }

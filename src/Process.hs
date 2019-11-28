@@ -732,7 +732,7 @@ compile s cOut binOut = transpile s >>= \case
   Left err -> putStrLn err
   Right c -> do
     writeFile cOut c
-    let flags = ["-O2", "-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
+    let flags = ["-O2", "-g", "-I", "runtime", "runtime/gt_switch.s", cOut, "-o", binOut]
     P.createProcess (P.proc "gcc" flags)
     return ()
 
