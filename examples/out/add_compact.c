@@ -19,10 +19,7 @@ gt_val add(gt_val x, gt_val y) { return (gt_val)((long)x + (long)y); }
 
 void var_f0(void) {
   for (;;) {
-    rbx = read_int();
-    r12 = read_int();
-    r15 = add(rbx,r12);
-    write_int(r15);
+    write_int(add(read_int(),read_int()));
   }
   asm ("jmp gt_stop\t\n");
 }

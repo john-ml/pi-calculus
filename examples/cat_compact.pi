@@ -1,0 +1,1 @@
+loop do putchar (getchar).

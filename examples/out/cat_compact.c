@@ -2,8 +2,7 @@
 #include "runtime.c"
 void var_f0(void) {
   for (;;) {
-    r15 = getchar();
-    putchar(r15);
+    putchar(getchar());
   }
   asm ("jmp gt_stop\t\n");
 }

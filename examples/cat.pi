@@ -1,4 +1,4 @@
 loop
   c <~ getchar;
-  _ <~ putchar c.
+  do putchar c.
 

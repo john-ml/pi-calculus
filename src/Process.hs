@@ -48,6 +48,7 @@ data Process
   | Send Var Var Process
   | Recv Var Var Process
   | Eval Var ForeignExp Process
+  | Do ForeignExp Process
   | Process :|: Process
   | Process :+: Process
   | Loop Process
@@ -96,6 +97,7 @@ anno f = cata $ \ p ->
     SendF s d (Anno a _) -> ann (f (SendF s d a))
     RecvF d s (Anno a _) -> ann (f (RecvF d s a))
     EvalF x e (Anno a _) -> ann (f (EvalF x e a))
+    DoF e (Anno a _) -> ann (f (DoF e a))
     Anno a _ :|:$ Anno b _ -> ann (f (a :|:$ b))
     Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
     LoopF (Anno a _) -> ann (f (LoopF a))
@@ -113,6 +115,7 @@ anno2 f g = cata $ \ p ->
     SendF s d (Anno (a, b) _) -> ann (SendF s d a) (SendF s d b)
     RecvF d s (Anno (a, b) _) -> ann (RecvF d s a) (RecvF d s b)
     EvalF x e (Anno (a, b) _) -> ann (EvalF x e a) (EvalF x e b)
+    DoF e (Anno (a, b) _) -> ann (DoF e a) (DoF e b)
     Anno (a1, b1) _ :|:$ Anno (a2, b2) _ -> ann (a1 :|:$ a2) (b1 :|:$ b2)
     Anno (a1, b1) _ :+:$ Anno (a2, b2) _ -> ann (a1 :+:$ a2) (b1 :+:$ b2)
     LoopF (Anno (a, b) _) -> ann (LoopF a) (LoopF b)
@@ -132,6 +135,7 @@ pattern ANew a x p = Anno a (NewF x p)
 pattern ASend a s d p = Anno a (SendF s d p)
 pattern ARecv a d s p = Anno a (RecvF d s p)
 pattern AEval a x e p = Anno a (EvalF x e p)
+pattern ADo a e p = Anno a (DoF e p)
 pattern ABoth a p q = Anno a (p :|:$ q)
 pattern APick a p q = Anno a (p :+:$ q)
 pattern ALoop a p = Anno a (LoopF p)
@@ -149,6 +153,7 @@ foldVars m = cata $ \case
   SendF x y mz -> m x <> m y <> mz
   RecvF x y mz -> m x <> m y <> mz
   EvalF x e my -> m x <> foldMap m e <> my
+  DoF e my -> foldMap m e <> my
   mx :|:$ my -> mx <> my
   mx :+:$ my -> mx <> my
   LoopF mx -> mx
@@ -172,6 +177,7 @@ ub p = go M.empty p `evalState` maxUsed p where
     Send s d p -> Send (σ ! s) (σ ! d) <$> go σ p
     Recv d s p -> do d' <- gen; Recv d' (σ ! s) <$> go (M.insert d d' σ) p
     Eval x e p -> do x' <- gen; Eval x' ((σ !) <$> e) <$> go (M.insert x x' σ) p
+    Do e p -> Do ((σ !) <$> e) <$> go σ p
     p :|: q -> liftA2 (:|:) (go σ p) (go σ q)
     p :+: q -> liftA2 (:+:) (go σ p) (go σ q)
     Loop p -> Loop <$> go σ p
@@ -188,6 +194,7 @@ fvF = \case
   SendF s d vs -> S.insert s (S.insert d vs)
   RecvF d s vs -> S.insert s (S.delete d vs)
   EvalF x e vs -> foldMap S.singleton e ∪ S.delete x vs
+  DoF e vs -> foldMap S.singleton e
   vs :|:$ ws -> vs ∪ ws
   vs :+:$ ws -> vs ∪ ws
   LoopF vs -> vs
@@ -213,6 +220,7 @@ evalF = \case
   SendF _ _ p -> p
   RecvF _ _ p -> p
   EvalF _ _ _ -> Any True
+  DoF _ _ -> Any True
   -- We fork the 2nd process, so *this* process's Eval-ness doesn't depend on it
   p :|:$ _ -> p
   -- We could choose either, so we depend on both
@@ -235,6 +243,7 @@ sinkNews = fixed . fix $ \ go ->
     ANew vs x (ASend _ s d (Anns a p)) | x /= s && x /= d -> ASend vs s d <$> rec x a p
     ANew vs x (ARecv _ d s (Anns a p)) | x /= s -> ARecv vs s d <$> rec x a p
     ANew _ x (AEval (ws, b) y e (Anns ap@(ps, _) p)) | x ∉ (ws S.\\ ps) -> AEval (ws, b) y e <$> rec x ap p
+    ANew _ x (ADo (ws, b) e (Anns ap@(ps, _) p)) | x ∉ (ws S.\\ ps) -> ADo (ws, b) e <$> rec x ap p
     ANew vs x (ABoth _ (FV ps p) (Anns aq q)) | x ∉ ps -> ABoth vs <$> go p <*> rec x aq q
     ANew vs x (ABoth _ (Anns ap p) (FV qs q)) | x ∉ qs -> ABoth vs <$> rec x ap p <*> go q
     ANew vs x (APick _ (Anns ap p) (Anns aq q)) -> APick vs <$> rec x ap p <*> rec x aq q
@@ -260,6 +269,7 @@ constraints = go S.empty where
     ASend (clique' -> vs) _ _ p -> vs ∪ go s p
     ARecv (clique' -> vs) _ _ p -> vs ∪ go s p
     AEval (clique' -> vs) _ _ p -> vs ∪ go s p
+    ADo (clique' -> vs) _ p -> vs ∪ go s p
     ABoth (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
     APick (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
     -- The tricky one: whatever is live now must still be live throughout body
@@ -278,6 +288,7 @@ forks x = fix $ \ go -> \case
   ASend _ _ _ p -> go p
   ARecv _ _ _ p -> go p
   AEval _ _ _ p -> go p
+  ADo _ _ p -> go p
   ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + go p + go q
   APick _ p q -> go p / 2 + go q / 2
   ALoop _ p -> 100 * go p
@@ -464,6 +475,9 @@ foreignExpG = \case
 evalG :: Var -> ForeignExp -> Code
 evalG x e = line' $ declG "gt_ch" x <> " = " <> foreignExpG e <> ";"
 
+doG :: ForeignExp -> Code
+doG e = line' $ foreignExpG e <> ";"
+
 bothG :: AnnProcess -> Set Var -> AnnProcess -> Gen Code
 bothG p qs q = do
   f <- gensym "f"
@@ -515,6 +529,7 @@ gen = \case
   ASend _ s d p -> (sendG s d <>) <$> gen p
   ARecv _ d s p -> (recvG d s <>) <$> gen p
   AEval _ x e p -> (evalG x e <>) <$> gen p
+  ADo _ e p -> (doG e <>) <$> gen p
   ABoth _ p (FV qs q) -> bothG p qs q
   APick _ p q -> do
     p' <- gen p
@@ -603,7 +618,7 @@ braces = P.between (symbol "{") (symbol "}")
 -- -------------------- Parsing --------------------
 
 keywords :: [String]
-keywords = ["new", "all", "any", "loop", "match"]
+keywords = ["new", "all", "any", "loop", "match", "foreign", "do"]
 
 word :: Parser String
 word = do
@@ -656,12 +671,14 @@ matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
   armP = (,) <$> varP <* symbol "=>" <*> procP
 
 foreignP :: Parser Process
-foreignP = symbol "foreign" >> Foreign <$> bodyP 0 <*> procP where
+foreignP = symbol "foreign" >> symbol "{" >> Foreign <$> suffix 0 <*> procP where
   suffix n = (++) <$> P.takeWhileP Nothing nonBrace <*> bodyP n
   bodyP n = tryAll
     [ (++) <$> string "{" <*> suffix (n + 1)
-    , (++) <$> string "}"
-        <*> if n == 1 then sc $> "" else (++) <$> spaces <*> suffix (n - 1)
+    , string "}" >>
+        if n == 0
+        then sc $> ""
+        else (\ x y -> "}" ++ x ++ y) <$> spaces <*> suffix (n - 1)
     ]
   nonBrace = \case
     '{' -> False
@@ -676,8 +693,16 @@ foreignExpP = Call <$> word <*> many argP where
 evalP :: Parser Process
 evalP = Eval <$> bindP <* symbol "<~" <*> foreignExpP <*> contP
 
+doP :: Parser Process
+doP = symbol "do" >> Do <$> foreignExpP <*> contP
+
 procP :: Parser Process
-procP = tryAll [newP, sendP, recvP, evalP, anyP, allP, loopP, matchP, foreignP]
+procP = tryAll
+  [ -- Try stuff that starts with keywords first...
+    newP, doP, anyP, allP, loopP, matchP, foreignP
+  , -- ...before the stuff with arrows in them
+    sendP, recvP, evalP
+  ]
 
 parse' :: String -> String -> Either String Process
 parse' fname s =
