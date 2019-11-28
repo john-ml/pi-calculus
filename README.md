@@ -25,7 +25,6 @@ all {
 ```
 
 This program gives a pretty good overview of the syntax:
-```
 - `new x; P` is a process which creates a new channel `x` and continues as `P`.
 - `all { P .. Q }` runs processes `P` .. `Q` concurrently.
 - `loop P` runs process `P` in a loop forever.
@@ -39,15 +38,12 @@ This program gives a pretty good overview of the syntax:
     ```
     is a working `cat` program.
 - `do f y .. z; P` is similar but ignores the result.
-```
 
 A few things not covered by the above example:
-```
 - `any { P .. Q }` randomly chooses one of the processes `P` .. `Q` to run.
 - `match x { y => P, .., z => Q }` finds the first variable in `y` .. `z` that
     matches `x` and runs the corresponding process.
 - `foreign { ... }` inserts C code directly into the compiled output at global scope.
-```
 
 ## Repo map
 

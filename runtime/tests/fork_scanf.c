@@ -1,6 +1,7 @@
 #include <runtime.c>
 #include <stdio.h>
 
+__attribute__((noreturn))
 void f(void) {
   int c;
   scanf("%d", &c);
