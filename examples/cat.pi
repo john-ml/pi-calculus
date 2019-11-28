@@ -1,4 +1,9 @@
-loop
-  c <~ getchar;
-  do putchar c.
-
+new ch;
+all {
+  loop
+    x <~ getchar;
+    x -> ch.
+  loop
+    y <- ch;
+    do putchar y.
+}

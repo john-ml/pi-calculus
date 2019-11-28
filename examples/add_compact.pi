@@ -26,4 +26,3 @@ gt_val add(gt_val x, gt_val y) { return (gt_val)((long)x + (long)y); }
 }
 
 loop do write_int (add (read_int) (read_int)).
-

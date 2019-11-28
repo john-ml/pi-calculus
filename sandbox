@@ -1,5 +1,5 @@
 TODO
-- Connecting to C code using read/write handlers
+x Connecting to C code
 - Parallelism
 - GC of dead channels (and threads)?
 - Type system?

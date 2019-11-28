@@ -1,23 +1,23 @@
 #include <stdlib.h>
 #include "runtime.c"
-// gt_val read_int(void) {
-//   int n = 0;
-//   int c;
-//   do {
-//     c = getchar();
-//   } while (c == '\n' || c == ' ');
-//   while ('0' <= c && c <= '9') {
-//     n = 10*n + (c - '0');
-//     c = getchar();
-//   }
-//   return (gt_val)(long)n;
-// }
-
 gt_val read_int(void) {
+  int n = 0;
   int c;
-  scanf("%d", &c);
-  return (gt_val)(long)c;
+  do {
+    c = getchar();
+  } while (c == '\n' || c == ' ');
+  while ('0' <= c && c <= '9') {
+    n = 10*n + (c - '0');
+    c = getchar();
+  }
+  return (gt_val)(long)n;
 }
+
+// gt_val read_int(void) {
+//   int c;
+//   scanf("%d", &c);
+//   return (gt_val)(long)c;
+// }
 
 void write_int(gt_val c) { printf("%d\n", (int)(long)c); }
 
