@@ -35,15 +35,24 @@ import qualified System.Process as P
 
 type Var = Word64
 
+data ForeignExp' a
+  = Atom a
+  | Call String [ForeignExp' a]
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+type ForeignExp = ForeignExp' Var
+
 data Process
   = Halt
   | New Var Process
   | Send Var Var Process
   | Recv Var Var Process
+  | Eval Var ForeignExp Process
   | Process :|: Process
   | Process :+: Process
   | Loop Process
   | Match Var [(Var, Process)]
+  | Foreign String Process
   deriving (Eq, Ord, Show)
 
 makeBaseFunctor ''Process
@@ -86,10 +95,32 @@ anno f = cata $ \ p ->
     NewF x (Anno a _) -> ann (f (NewF x a))
     SendF s d (Anno a _) -> ann (f (SendF s d a))
     RecvF d s (Anno a _) -> ann (f (RecvF d s a))
+    EvalF x e (Anno a _) -> ann (f (EvalF x e a))
     Anno a _ :|:$ Anno b _ -> ann (f (a :|:$ b))
     Anno a _ :+:$ Anno b _ -> ann (f (a :+:$ b))
     LoopF (Anno a _) -> ann (f (LoopF a))
     MatchF x arms -> ann (f (MatchF x (map (\ (y, Anno a _) -> (y, a)) arms)))
+    ForeignF body (Anno a _) -> ann (f (ForeignF body a))
+
+anno2 ::
+  (Base Process a -> a) -> (Base Process b -> b) ->
+  Process -> Fix (AnnoF (a, b) (Base Process))
+anno2 f g = cata $ \ p ->
+  let ann x y = Anno (f x, g y) p in
+  case p of
+    HaltF -> ann HaltF HaltF
+    NewF x (Anno (a, b) _) -> ann (NewF x a) (NewF x b)
+    SendF s d (Anno (a, b) _) -> ann (SendF s d a) (SendF s d b)
+    RecvF d s (Anno (a, b) _) -> ann (RecvF d s a) (RecvF d s b)
+    EvalF x e (Anno (a, b) _) -> ann (EvalF x e a) (EvalF x e b)
+    Anno (a1, b1) _ :|:$ Anno (a2, b2) _ -> ann (a1 :|:$ a2) (b1 :|:$ b2)
+    Anno (a1, b1) _ :+:$ Anno (a2, b2) _ -> ann (a1 :+:$ a2) (b1 :+:$ b2)
+    LoopF (Anno (a, b) _) -> ann (LoopF a) (LoopF b)
+    MatchF x arms ->
+      ann
+        (MatchF x (map (\ (y, Anno (a, _) _) -> (y, a)) arms))
+        (MatchF x (map (\ (y, Anno (_, b) _) -> (y, b)) arms))
+    ForeignF body (Anno (a, b) _) -> ann (ForeignF body a) (ForeignF body b)
 
 unanno :: Fix (AnnoF a (Base Process)) -> Process
 unanno = hoist (snd . getCompose)
@@ -100,11 +131,13 @@ pattern AHalt a = Anno a HaltF
 pattern ANew a x p = Anno a (NewF x p)
 pattern ASend a s d p = Anno a (SendF s d p)
 pattern ARecv a d s p = Anno a (RecvF d s p)
+pattern AEval a x e p = Anno a (EvalF x e p)
 pattern ABoth a p q = Anno a (p :|:$ q)
 pattern APick a p q = Anno a (p :+:$ q)
 pattern ALoop a p = Anno a (LoopF p)
 pattern AMatch a x arms = Anno a (MatchF x arms)
 pattern AMatch' a x ys ps <- Anno a (MatchF x (L.unzip -> (ys, ps)))
+pattern AForeign a body p = Anno a (ForeignF body p)
 
 -- -------------------- Variables --------------------
 
@@ -115,10 +148,12 @@ foldVars m = cata $ \case
   NewF x my -> m x <> my
   SendF x y mz -> m x <> m y <> mz
   RecvF x y mz -> m x <> m y <> mz
+  EvalF x e my -> m x <> foldMap m e <> my
   mx :|:$ my -> mx <> my
   mx :+:$ my -> mx <> my
   LoopF mx -> mx
   MatchF x (L.unzip -> (ys, mzs)) -> mconcat (m x : map m ys ++ mzs)
+  ForeignF _ mx -> mx
 
 -- Smallest variable v such that {v + 1, v + 2, ..} are all unused
 maxUsed :: Process -> Var
@@ -136,10 +171,12 @@ ub p = go M.empty p `evalState` maxUsed p where
     New x p -> do x' <- gen; New x' <$> go (M.insert x x' σ) p
     Send s d p -> Send (σ ! s) (σ ! d) <$> go σ p
     Recv d s p -> do d' <- gen; Recv d' (σ ! s) <$> go (M.insert d d' σ) p
+    Eval x e p -> do x' <- gen; Eval x' ((σ !) <$> e) <$> go (M.insert x x' σ) p
     p :|: q -> liftA2 (:|:) (go σ p) (go σ q)
     p :+: q -> liftA2 (:+:) (go σ p) (go σ q)
     Loop p -> Loop <$> go σ p
     Match x yps -> Match (σ ! x) <$> mapM (\ (y, p) -> (σ ! y,) <$> go σ p) yps
+    Foreign body p -> Foreign body <$> go σ p
   σ ! x = M.findWithDefault x x σ
   gen = modify' succ *> get
 
@@ -150,37 +187,60 @@ fvF = \case
   NewF x vs -> S.delete x vs
   SendF s d vs -> S.insert s (S.insert d vs)
   RecvF d s vs -> S.insert s (S.delete d vs)
+  EvalF x e vs -> foldMap S.singleton e ∪ S.delete x vs
   vs :|:$ ws -> vs ∪ ws
   vs :+:$ ws -> vs ∪ ws
   LoopF vs -> vs
   MatchF x (L.unzip -> (xs, vss)) -> S.fromList (x : xs) ∪ F.fold vss
+  ForeignF _ vs -> vs
 
 fv :: Process -> Set Var
 fv = cata fvF
 
 -- -------------------- Liveness (from here on, assume UB) --------------------
 
-type FVProcess = AProcess (Set Var)
-pattern FV ws p <- ((\ p -> (p, p)) -> (p, Anno ws _))
+-- We want to annotate each AST node with a set of free variables + whether
+-- the process executes arbtirary C code (using Eval) during its lifetime.
+type AnnProcess = AProcess (Set Var, Any)
+pattern FV ws p <- ((\ p -> (p, p)) -> (p, Anno (ws, _) _))
+pattern Evals b p <- ((\ p -> (p, p)) -> (p, Anno (_, Any b) _))
+pattern Anns a p <- ((\ p -> (p, p)) -> (p, Anno a _))
 
-fvAnno :: Process -> FVProcess
-fvAnno = anno fvF
+evalF :: Base Process Any -> Any
+evalF = \case
+  HaltF -> Any False
+  NewF _ p -> p
+  SendF _ _ p -> p
+  RecvF _ _ p -> p
+  EvalF _ _ _ -> Any True
+  -- We fork the 2nd process, so *this* process's Eval-ness doesn't depend on it
+  p :|:$ _ -> p
+  -- We could choose either, so we depend on both
+  p :+:$ q -> p <> q
+  LoopF p -> p
+  MatchF _ (L.unzip -> (_, ps)) -> F.fold ps
+  ForeignF _ p -> p
+
+fvAnno :: Process -> AnnProcess
+fvAnno = anno2 fvF evalF
 
 -- New sinking
-sinkNews :: FVProcess -> FVProcess
+sinkNews :: AnnProcess -> AnnProcess
 sinkNews = fixed . fix $ \ go ->
-  let rec' x ps p = go . ANew (S.delete x ps) x =<< go p in
-  let rec x ps p = do tell (Any True); rec' x ps p in
+  let rec' x a p = go . ANew (first (S.delete x) a) x =<< go p in
+  let rec x a p = do tell (Any True); rec' x a p in
   \case
-    ANew vs x (Anno ps p) | x ∉ ps -> go (Anno vs p)
-    ANew vs x (ANew _ y (FV ps p)) -> ANew vs y <$> rec' x ps p
-    ANew vs x (ASend _ s d (FV ps p)) | x /= s && x /= d -> ASend vs s d <$> rec x ps p
-    ANew vs x (ARecv _ d s (FV ps p)) | x /= s -> ARecv vs s d <$> rec x ps p
-    ANew vs x (ABoth _ (FV ps p) (FV qs q)) | x ∉ ps -> ABoth vs <$> go p <*> rec x qs q
-    ANew vs x (ABoth _ (FV ps p) (FV qs q)) | x ∉ qs -> ABoth vs <$> rec x ps p <*> go q
-    ANew vs x (APick ws (FV ps p) (FV qs q)) -> APick vs <$> rec x ps p <*> rec x qs q
+    ANew vs x (Anno (ps, _) p) | x ∉ ps -> go (Anno vs p)
+    ANew vs x (ANew _ y (Anns a p)) -> ANew vs y <$> rec' x a p
+    ANew vs x (ASend _ s d (Anns a p)) | x /= s && x /= d -> ASend vs s d <$> rec x a p
+    ANew vs x (ARecv _ d s (Anns a p)) | x /= s -> ARecv vs s d <$> rec x a p
+    ANew _ x (AEval (ws, b) y e (Anns ap@(ps, _) p)) | x ∉ (ws S.\\ ps) -> AEval (ws, b) y e <$> rec x ap p
+    ANew vs x (ABoth _ (FV ps p) (Anns aq q)) | x ∉ ps -> ABoth vs <$> go p <*> rec x aq q
+    ANew vs x (ABoth _ (Anns ap p) (FV qs q)) | x ∉ qs -> ABoth vs <$> rec x ap p <*> go q
+    ANew vs x (APick _ (Anns ap p) (Anns aq q)) -> APick vs <$> rec x ap p <*> rec x aq q
     ANew vs x (AMatch _ y arms) | x `L.notElem` (y : map fst arms) ->
-      AMatch vs y <$> mapM (mapM (\ (FV ps p) -> rec x ps p)) arms
+      AMatch vs y <$> mapM (mapM (\ (Anns ap p) -> rec x ap p)) arms
+    ANew vs x (AForeign _ body (Anns ap p)) -> AForeign vs body <$> rec x ap p
     p -> tell (Any False) $> p
 
 -- -------------------- Register allocation --------------------
@@ -192,34 +252,40 @@ clique :: Set Var -> Set Constraint
 clique xs = S.fromList [x :/=: y | x : ys <- L.tails (S.toList xs), y <- ys]
 
 -- Collect interference constraints
-constraints :: FVProcess -> Set Constraint
+constraints :: AnnProcess -> Set Constraint
 constraints = go S.empty where
   go s = \case
     AHalt (clique' -> vs) -> vs
     ANew (clique' -> vs) _ p -> vs ∪ go s p
     ASend (clique' -> vs) _ _ p -> vs ∪ go s p
     ARecv (clique' -> vs) _ _ p -> vs ∪ go s p
+    AEval (clique' -> vs) _ _ p -> vs ∪ go s p
     ABoth (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
     APick (clique' -> vs) p q -> vs ∪ go s p ∪ go s q
     -- The tricky one: whatever is live now must still be live throughout body
-    ALoop s'@(clique' -> vs) p -> vs ∪ go (s ∪ s') p 
+    ALoop (clique'' -> (s', vs)) p -> vs ∪ go (s ∪ s') p 
     AMatch' (clique' -> vs) _ _ ps -> vs ∪ foldMap (go s) ps
-    where clique' xs = clique $ s ∪ xs
+    AForeign _ _ ps -> go s ps
+    where
+      clique' a = snd $ clique'' a
+      clique'' (xs, _) = (xs, clique $ s ∪ xs)
 
 -- Expected number of forks that happen in a variable's lifetime
-forks :: Var -> FVProcess -> Double
+forks :: Var -> AnnProcess -> Double
 forks x = fix $ \ go -> \case
   AHalt _ -> 0
   ANew _ _ p -> go p
   ASend _ _ _ p -> go p
   ARecv _ _ _ p -> go p
+  AEval _ _ _ p -> go p
   ABoth _ p (FV qs q) -> (if x ∈ qs then 1 else 0) + go p + go q
   APick _ p q -> go p / 2 + go q / 2
   ALoop _ p -> 100 * go p
   AMatch' _ _ _ ps -> maximum (0 : map go ps)
+  AForeign _ _ ps -> go ps
 
 -- The variables in a process, sorted in increasing order by forks
-sortedVars :: FVProcess -> [Var]
+sortedVars :: AnnProcess -> [Var]
 sortedVars p = L.sortOn (`forks` p) (S.toList (uv (unanno p)))
 
 varName :: Var -> String
@@ -288,13 +354,13 @@ allocWith vars interference = runSMT . runMaybeT $ do
       let (sp, unsp) = L.genericSplitAt spills vars in
       tryAlloc sp unsp slots interference
 
-alloc' :: Bool -> FVProcess -> IO Alloc
+alloc' :: Bool -> AnnProcess -> IO Alloc
 alloc' True p = allocWith (sortedVars p) (constraints p) >>= \case
   Nothing -> error $ "Register allocation failed."
   Just m -> return m
 alloc' False p = return . M.fromList $ zip (S.toList . uv $ unanno p) (Spill <$> [0..])
 
-alloc :: FVProcess -> IO Alloc
+alloc :: AnnProcess -> IO Alloc
 alloc = alloc' True
 
 -- -------------------- C code formatting utils --------------------
@@ -350,12 +416,6 @@ procG name body = F.fold
   , line "}"
   ]
 
-spillSize :: Set Var -> Int
-spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
-
-stackSize :: Set Var -> Int
-stackSize spilled = 64 + spillSize spilled
-
 spillProcG :: Set Var -> Code -> Code -> Code
 spillProcG spilled name body = procG name $ F.fold
   [ line "gt_ch *rsp = (gt_ch *)gt_self()->rsp + 1;"
@@ -394,7 +454,17 @@ sendG s d = line' $ "gt_write(" <> varG d <> ", " <> varG s <> ");"
 recvG :: Var -> Var -> Code
 recvG d s = line' $ declG "gt_ch" d <> " = gt_read(" <> varG s <> ");"
 
-bothG :: FVProcess -> Set Var -> FVProcess -> Gen Code
+foreignExpG :: ForeignExp -> Code
+foreignExpG = \case
+  Atom x -> varG x
+  Call f xs ->
+    pure (D.fromList f) <> "(" <>
+      F.fold (L.intersperse "," (foreignExpG <$> xs)) <> ")"
+
+evalG :: Var -> ForeignExp -> Code
+evalG x e = line' $ declG "gt_ch" x <> " = " <> foreignExpG e <> ";"
+
+bothG :: AnnProcess -> Set Var -> AnnProcess -> Gen Code
 bothG p qs q = do
   f <- gensym "f"
   t <- gensym "t"
@@ -417,22 +487,34 @@ bothG p qs q = do
     , p'
     ]
   where
+    call :: Str -> Set Var -> Str
     call f spilled
-      | S.null spilled = "gt_go(" <> f <> ", " <> show' (stackSize spilled) <> ");"
+      | S.null spilled = "gt_go(" <> f <> ", " <> show' (stackSize spilled q) <> ");"
       | otherwise = "gt_go_alloca(" <>
           f <> ", " <> show' (spillSize spilled) <> ", " <>
-          show' (stackSize spilled) <> ");"
+          show' (stackSize spilled q) <> ");"
+
+    wasSpilled :: Alloc -> Var -> Bool
     wasSpilled alloc q =
       case alloc M.!? q of
         Just (Spill _) -> True
         _ -> False
 
-gen :: FVProcess -> Gen Code
+    spillSize :: Set Var -> Int
+    spillSize spilled = 16 * ((S.size spilled + 1) `div` 2)
+    
+    stackSize :: Set Var -> AnnProcess -> Int
+    stackSize spilled = \case
+      Evals True _ -> 0x100000 + spillSize spilled
+      Evals False _ -> 64 + spillSize spilled
+
+gen :: AnnProcess -> Gen Code
 gen = \case
   AHalt _ -> pure ""
   ANew _ x p -> (newG x <>) <$> gen p
   ASend _ s d p -> (sendG s d <>) <$> gen p
   ARecv _ d s p -> (recvG d s <>) <$> gen p
+  AEval _ x e p -> (evalG x e <>) <$> gen p
   ABoth _ p (FV qs q) -> bothG p qs q
   APick _ p q -> do
     p' <- gen p
@@ -462,12 +544,15 @@ gen = \case
         , line "}"
         ]
       ]
+  AForeign _ body p -> do
+    tell . foldMap (line . D.fromList) $ lines body
+    gen p
 
-genTop :: FVProcess -> Gen Code
+genTop :: AnnProcess -> Gen Code
 genTop (FV vs p) = do
   tell $ line "#include <stdlib.h>"
   tell $ line "#include \"runtime.c\""
-  mainG <$> gen (ABoth vs (AHalt S.empty) p)
+  mainG <$> gen (ABoth (vs, Any False) (AHalt (S.empty, Any False)) p)
 
 runGen :: Alloc -> Gen Code -> String
 runGen alloc m =
@@ -570,7 +655,8 @@ matchP :: Parser Process
 matchP = symbol "match" >> Match <$> varP <*> braces (many armP) where
   armP = (,) <$> varP <* symbol "=>" <*> procP
 
-foreignP = bodyP 0 where
+foreignP :: Parser Process
+foreignP = symbol "foreign" >> Foreign <$> bodyP 0 <*> procP where
   suffix n = (++) <$> P.takeWhileP Nothing nonBrace <*> bodyP n
   bodyP n = tryAll
     [ (++) <$> string "{" <*> suffix (n + 1)
@@ -583,8 +669,15 @@ foreignP = bodyP 0 where
     _ -> True
   spaces = P.takeWhileP Nothing isSpace
 
+foreignExpP :: Parser ForeignExp
+foreignExpP = Call <$> word <*> many argP where
+  argP = P.try (parens foreignExpP) <|> (Atom <$> varP)
+
+evalP :: Parser Process
+evalP = Eval <$> bindP <* symbol "<~" <*> foreignExpP <*> contP
+
 procP :: Parser Process
-procP = tryAll [newP, sendP, recvP, anyP, allP, loopP, matchP]
+procP = tryAll [newP, sendP, recvP, evalP, anyP, allP, loopP, matchP, foreignP]
 
 parse' :: String -> String -> Either String Process
 parse' fname s =

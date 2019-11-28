@@ -7,7 +7,7 @@
 
 " Keywords.
 syn keyword piKeyword new all any loop match foreign
-syn match piKeyword /->\|<-/
+syn match piKeyword /->\|<-\|<\~/
 " syn match piSymbol /[.~?&∈,;—@★{}()\[\]:≡=<>+*/\\|-]/
 
 " syn keyword piError TODO

@@ -1,6 +1,4 @@
-foreign <- stdin { return (gt_ch)(long)getchar(); }
-foreign c -> stdout { putchar((int)(long)c); }
 loop
-  c <- stdin;
-  c -> stdout.
+  c <~ getchar;
+  _ <~ putchar c.
 
