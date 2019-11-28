@@ -203,7 +203,8 @@ gt_t gt_go_alloca(void f(void), size_t m, size_t n) {
   else
     t->sp = t->stack;
   assert(t->sp && "gt_go: failed to allocate stack");
-  *(void **)(t->rsp = &t->sp[n - 8 - m]) = f;
+  *(void **)(t->rsp = &t->sp[n - 16 - m]) = f;
+  assert((uint64_t)t->rsp % 16 == 0 && "gt_go: rsp not properly aligned");
   gt_queue_enq(&threads_on, t);
   return t;
 }

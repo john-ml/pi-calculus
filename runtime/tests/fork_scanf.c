@@ -1,8 +1,8 @@
 #include <runtime.c>
 #include <stdio.h>
 
-__attribute__((noreturn))
 void f(void) {
+  // asm ("sub $8, %%rsp" : : : "rsp");
   int c;
   scanf("%d", &c);
   printf("Read in %d\n", c);

@@ -1,9 +1,17 @@
+foreign {
+
+gt_val get_char(void) { return (gt_val)(long)getchar(); }
+
+void put_char(gt_val c) { putchar((int)(long)c); }
+
+}
+
 new ch;
 all {
   loop
-    x <~ getchar;
+    x <~ get_char;
     x -> ch.
   loop
     y <- ch;
-    do putchar y.
+    do put_char y.
 }
