@@ -520,7 +520,7 @@ bothG p qs q = do
     stackSize :: Set Var -> AnnProcess -> Int
     stackSize spilled = \case
       Evals True _ -> 0x100000 + spillSize spilled
-      Evals False _ -> 64 + spillSize spilled
+      Evals False _ -> 0x100 + spillSize spilled
 
 gen :: AnnProcess -> Gen Code
 gen = \case

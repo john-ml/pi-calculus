@@ -1,5 +1,13 @@
+foreign {
+
+void pretty_print(gt_val x) { printf("%lu", x - channels); }
+
+}
+
 new x y;
 all {
   loop y -> x.
-  loop z <- x.
+  loop
+    z <- x;
+    do pretty_print z.
 }
