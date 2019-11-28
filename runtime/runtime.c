@@ -2,7 +2,7 @@
 
 // #define NDEBUG // no asserts
 #define NPRINTFDEBUG // no debug logs
-#define GT_CHAN_SIZE 0x2 // size of channel ring buffer
+#define GT_CHAN_SIZE 0x10 // size of channel ring buffer
 #define INLINE_STACK_SIZE 128 // max size of thread stack that doesn't need malloc
 
 // -----------------------------------------------------------------------------
@@ -60,18 +60,6 @@ typedef gt_ch gt_val;
 // Create a new channel
 gt_ch gt_chan(void);
 
-struct handler_extra;
-
-// Register "on read" event for ch. Everyone loses the ability to write to ch.
-// Future calls to gt_read(ch) will resume the handler before attempting to read
-// from ch.
-gt_ch gt_read_only_chan(void h(void), struct handler_extra *extra, size_t n);
-
-// Register "on write" event for ch. Everyone loses the ability to read from ch.
-// Future calls to gt_write(ch, v) will resume the handler with extra->info = v
-// instead of actually writing anything to the channel.
-gt_ch gt_write_only_chan(void h(void), struct handler_extra *extra, size_t n);
-
 // Destroy a channel
 void gt_drop(gt_ch c);
 
@@ -80,22 +68,6 @@ gt_val gt_read(gt_ch c);
 
 // Write v to a channel
 void gt_write(gt_ch c, gt_val v);
-
-// Request to idle until someone reads from ch
-void gt_wait_read(gt_ch ch);
-
-// Request to idle until someone writes to ch
-void gt_wait_write(gt_ch ch);
-
-// An event handler for interfacing with C code.
-typedef struct {
-  gt_t t; // A thread with enough stack space to handle the event with normal C
-  // Extra info the handler needs to work
-  struct handler_extra {
-    void *info; // An extra value
-    gt_t cause; // The thread which triggered the event
-  } *extra;
-} handler;
 
 // Dump thread + channel state
 // NB: Uses printf a lot so, make sure you have >= 4096 bytes of stack space.
@@ -117,28 +89,15 @@ typedef struct gt_queue {
   gt_t front, back;
 } *gt_queue;
 
-
+// Channel state: (waiting to write, ring buffer, waiting to read)
 struct gt_chan {
+  // IDLE threads are stored in read/write queues
+  struct gt_queue readers, writers;
+  // Values are stored in a ring buffer
+  size_t first, last;
+  gt_val values[GT_CHAN_SIZE];
   // Free list
   gt_ch next;
-  enum gt_ch_state {GT_CH_NORMAL, GT_CH_READ_ONLY, GT_CH_WRITE_ONLY} tag;
-  union {
-    // Standard channel state: (waiting to write, ring buffer, waiting to read)
-    struct {
-      // IDLE threads are stored in read/write queues
-      struct gt_queue readers, writers;
-      // Values are stored in a ring buffer
-      size_t first, last;
-      gt_val values[GT_CHAN_SIZE];
-    } normal;
-    // Read-only state: handler for on_read is expected to deposit its result in res
-    struct {
-      handler handler;
-      gt_val res;
-    } read_only;
-    // Write-only state: every write just resumes the handler
-    handler write_only;
-  } as;
 };
 
 // ------------------------------ Global state ---------------------------------
@@ -230,7 +189,7 @@ void gt_init(void) {
 
 gt_t gt_go(void f(void), size_t n) { return gt_go_alloca(f, 0, n); }
 
-static gt_t gt_spawn_alloca(void f(void), size_t m, size_t n) {
+gt_t gt_go_alloca(void f(void), size_t m, size_t n) {
   gt_t t;
   if (threads_free) {
     t = threads_free;
@@ -245,13 +204,6 @@ static gt_t gt_spawn_alloca(void f(void), size_t m, size_t n) {
     t->sp = t->stack;
   assert(t->sp && "gt_go: failed to allocate stack");
   *(void **)(t->rsp = &t->sp[n - 8 - m]) = f;
-  return t;
-}
-
-static gt_t gt_spawn(void f(void), size_t n) { return gt_spawn_alloca(f, 0, n); }
-
-gt_t gt_go_alloca(void f(void), size_t m, size_t n) {
-  gt_t t = gt_spawn_alloca(f, m, n);
   gt_queue_enq(&threads_on, t);
   return t;
 }
@@ -294,28 +246,27 @@ void gt_exit(int c) {
 
 static size_t gt_ch_succ(size_t i) { return (i + 1ul) % GT_CHAN_SIZE; }
 
-static bool gt_ch_empty(gt_ch c) { return c->as.normal.first == c->as.normal.last; }
+static bool gt_ch_empty(gt_ch c) { return c->first == c->last; }
 
-static bool gt_ch_full(gt_ch c) {
-  return gt_ch_succ(c->as.normal.last) == c->as.normal.first;
-}
+static bool gt_ch_full(gt_ch c) { return gt_ch_succ(c->last) == c->first; }
 
 static gt_val gt_ch_deq(gt_ch c) {
   assert(!gt_ch_empty(c) && "gt_ch_deq: reading from empty queue");
-  gt_val v = c->as.normal.values[c->as.normal.first];
-  c->as.normal.first = gt_ch_succ(c->as.normal.first);
+  gt_val v = c->values[c->first];
+  c->first = gt_ch_succ(c->first);
   return v;
 }
 
 static void gt_ch_enq(gt_ch c, gt_val v) {
   assert(!gt_ch_full(c) && "gt_ch_enq: writing to full queue");
-  c->as.normal.values[c->as.normal.last] = v;
-  c->as.normal.last = gt_ch_succ(c->as.normal.last);
+  c->values[c->last] = v;
+  c->last = gt_ch_succ(c->last);
 }
 
 // ---------------------------------- Channel ----------------------------------
 
-static gt_ch gt_alloc(void) {
+// Create a new channel
+gt_ch gt_chan(void) {
   gt_ch c;
   if (channels_free) {
     c = channels_free;
@@ -326,104 +277,46 @@ static gt_ch gt_alloc(void) {
   return c;
 }
 
-// Create a new channel
-gt_ch gt_chan(void) {
-  gt_ch c = gt_alloc();
-  c->tag = GT_CH_NORMAL;
-  return c;
-}
-
-gt_ch gt_read_only_chan(void h(void), struct handler_extra *extra, size_t n) {
-  gt_ch c = gt_alloc();
-  c->tag = GT_CH_READ_ONLY;
-  gt_t t = gt_spawn(h, n);
-  c->as.read_only.handler.t = t;
-  c->as.read_only.handler.extra = extra;
-  return c;
-}
-
-gt_ch gt_write_only_chan(void h(void), struct handler_extra *extra, size_t n) {
-  gt_ch c = gt_alloc();
-  c->tag = GT_CH_WRITE_ONLY;
-  gt_t t = gt_spawn(h, n);
-  c->as.write_only.t = t;
-  c->as.write_only.extra = extra;
-  return c;
-}
-
 // Destroy a channel
 void gt_drop(gt_ch c) {
   c->next = channels_free;
   channels_free = c;
 }
 
-void gt_wait_write(gt_ch c) {
-  gt_queue_enq(&c->as.normal.readers, current);
-  debugf("%lu: gt_wait_write(%lu)\n", current - threads, c - channels);
-  gt_dump();
-  gt_idle();
-}
-
-static void gt_wait_read_(gt_ch c, gt_val v) {
-  gt_queue_enq(&c->as.normal.writers, current);
-  debugf("%lu: gt_wait_read_(%lu, %lu)\n",
+gt_val gt_read(gt_ch c) {
+  while (gt_ch_empty(c)) {
+    gt_queue_enq(&c->readers, current);
+    debugf("%lu: WAIT gt_read(%lu)\n", current - threads, c - channels);
+    gt_dump();
+    gt_idle();
+  }
+  gt_ch r = gt_ch_deq(c);
+  if (!gt_queue_empty(&c->writers))
+    gt_queue_enq(&threads_on, gt_queue_deq(&c->writers));
+  debugf("%lu: gt_read(%lu) = %lu\n",
     current - threads,
     c - channels,
-    v - channels);
+    r - channels);
   gt_dump();
-  gt_idle();
-}
-
-void gt_wait_read(gt_ch ch) { gt_wait_read_(ch, NULL); }
-
-gt_val gt_read(gt_ch c) {
-  switch (c->tag) {
-  case GT_CH_NORMAL:
-    while (gt_ch_empty(c))
-      gt_wait_write(c);
-    gt_ch r = gt_ch_deq(c);
-    if (!gt_queue_empty(&c->as.normal.writers))
-      gt_queue_enq(&threads_on, gt_queue_deq(&c->as.normal.writers));
-    debugf("%lu: gt_read(%lu) = %lu\n",
-      current - threads,
-      c - channels,
-      r - channels);
-    gt_dump();
-    return (gt_val)r;
-  case GT_CH_READ_ONLY:
-    c->as.read_only.handler.extra->info = &c->as.read_only.res;
-    gt_t t = c->as.read_only.handler.extra->cause = current;
-    gt_switch(t, current = c->as.read_only.handler.t);
-    return c->as.read_only.res;
-  case GT_CH_WRITE_ONLY:
-    assert(0 && "gt_read: reading from write-only channel");
-    break;
-  default: return NULL;
-  }
+  return (gt_val)r;
 }
 
 void gt_write(gt_ch c, gt_val v) {
-  switch(c->tag) {
-  case GT_CH_NORMAL:
-    while (gt_ch_full(c))
-      gt_wait_read_(c, v);
-    gt_ch_enq(c, v);
-    if (!gt_queue_empty(&c->as.normal.readers))
-      gt_queue_enq(&threads_on, gt_queue_deq(&c->as.normal.readers));
-    debugf("%lu: gt_write(%lu, %lu)\n",
-      current - threads, c - channels, v - channels);
+  while (gt_ch_full(c)) {
+    gt_queue_enq(&c->writers, current);
+    debugf("%lu: WAIT gt_write(%lu, %lu)\n",
+      current - threads,
+      c - channels,
+      v - channels);
     gt_dump();
-    return;
-  case GT_CH_READ_ONLY:
-    assert(0 && "gt_write: writing to read-only channel");
-    return;
-  case GT_CH_WRITE_ONLY:
-    c->as.write_only.extra->info = v;
-    gt_t t = c->as.write_only.extra->cause = current;
-    gt_switch(t, current = c->as.write_only.t);
-    return;
-  default: return;
+    gt_idle();
   }
+  gt_ch_enq(c, v);
+  if (!gt_queue_empty(&c->readers))
+    gt_queue_enq(&threads_on, gt_queue_deq(&c->readers));
+  debugf("%lu: gt_write(%lu, %lu)\n",
+    current - threads, c - channels, v - channels);
+  gt_dump();
 }
 
 void gt_dump(void) {
@@ -434,22 +327,18 @@ void gt_dump(void) {
   debugs("");
   debugf("  channels (%lu total):\n", channels_end - channels);
   for (size_t i = 0; i < channels_end - channels; ++i) {
-    if (channels[i].tag == GT_CH_NORMAL) {
-      debugf("    %lu: %s\n", i, !channels[i].next ? "ON" : "OFF");
-      debugf("      readers: ");
-      for (gt_t id = channels[i].as.normal.readers.front; id; id = id->next)
-        debugf("%lu ", id - threads);
-      debugs("");
-      debugf("      values: ");
-      for (size_t j = channels[i].as.normal.first;
-           j != channels[i].as.normal.last;
-           j = gt_ch_succ(j))
-        debugf("%lu ", channels[i].as.normal.values[j] - channels);
-      debugs("");
-      debugf("      writers: ");
-      for (gt_t id = channels[i].as.normal.writers.front; id; id = id->next)
-        debugf("%lu ", id - threads);
-      debugs("");
-    }
+    debugf("    %lu: %s\n", i, !channels[i].next ? "ON" : "OFF");
+    debugf("      readers: ");
+    for (gt_t id = channels[i].readers.front; id; id = id->next)
+      debugf("%lu ", id - threads);
+    debugs("");
+    debugf("      values: ");
+    for (size_t j = channels[i].first; j != channels[i].last; j = gt_ch_succ(j))
+      debugf("%lu ", channels[i].values[j] - channels);
+    debugs("");
+    debugf("      writers: ");
+    for (gt_t id = channels[i].writers.front; id; id = id->next)
+      debugf("%lu ", id - threads);
+    debugs("");
   }
 }

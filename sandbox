@@ -11,133 +11,20 @@ IO/primitives
   - e.g. cat = !stdin(c).stdout<c>.0
     - send/recv never inspect the values so it's fine
     - stdin/stdout will correctly format their results/inputs
-- Currently have new x; P
-  One way to add in IO/primitives:
-  - foreign { C code } -> x; P
-    Run C code to compute a value and send it to x, then continue as P
-  - foreign y <- x { C code }; P
-    Read y from x and run C code that uses it, then continue as P
-  Then, for example, can have:
-  - new stdin stdout;
-    all {
-      loop foreign c <- stdout { fputc(c, stdout); }.
-      loop foreign { return fgetc(stdin); } -> stdin.
-    }
-  But now this might block forever b/c fgetc isn't async.
-- Ideally:
-  - y -> x ==> maybe can run C code that uses y on receiving end
-  - y <- x ==> maybe triggers some C code that sends y back
-- Another way to add IO/primitives:
-  - Can declare, at global scope, channel x as foreign
-    - Channels are either "foreign read handler", "foreign write handler", or neither
-    - Can define C code handling read/write "events" (again at global scope)
-    - e.g. handling writes to stdout: foreign c -> stdout { fputc(c, stdout); }
-    - e.g. handling reads from stdin: foreign <- stdin { return fgetc(stdin); }
-  - Implementation: handlers get their own threads (so that they have enough
-    stack space to execute), initialized at startup.
-  - Handlers basically run the handling code in a loop.
-  - e.g. adding two numbers:
-      x <- stdin_int;
-      y <- stdin_int;
-      new xy; // For private communication with adder
-      xy -> adder;
-      x -> xy;
-      y -> xy;
-      result <- xy;
-      result -> stdout_int.
-  - Handler impls:
-    foreign ch -> adder {
-      gt_write(ch, (gt_ch)((uint64_t)gt_read(ch) + (uint64_t)gt_read(ch)));
-    }
-    foreign <- stdin_int {
-      int c;
-      scanf("%d", &c);
-      return (gt_ch)c;
-    }
-    foreign c -> stdout_int {
-      printf("%d", (int)c);
-    }
-  - This compiles to global channels and wires up handlers properly:
-      gt_ch adder;
-      gt_ch stdin_int;
-      gt_ch stdout_int;
-      void adder_handler(gt_ch ch) {
-        gt_write(ch, (gt_ch)((uint64_t)gt_read(ch) + (uint64_t)gt_read(ch)));
-      }
-      void adder_loop(void) { for (;;) adder_handler(gt_read(adder)); }
-      gt_ch stdin_int_handler(void) {
-        int c;
-        scanf("%d", &c);
-        return (gt_ch)c;
-      }
-      void stdin_int_loop(void) { for (;;) gt_write(stdin_int, stdin_int_handler()); }
-      void stdout_int_handler(gt_ch c) {
-        printf("%d", (int)c);
-      }
-      void stdout_int_loop(void) { for (;;) stdout_int_handler(gt_read(stdout_int)); }
-    Then later, in main:
-      adder = gt_chan();
-      stdin_int = gt_chan();
-      stdout_int = gt_chan();
-      gt_go(adder_loop, 0x10000);
-      gt_go(stdin_int_loop, 0x10000);
-      gt_go(stdout_int_loop, 0x10000);
-  - To prevent scanf from blocking everything else, can force stdin_int's ring buffer
-    to be really small. So only a few characters can be read in at a time before
-    stdin_int_loop has to take a break and let other threads process what was read in.
-    - Customizing ring buffers for individual channels?
-    - This would make C channels that read from stdin in a loop less blocky
-    - But maybe this will Just Work after implementing parallelism
-  - fgetc still blocks, so this is basically just a more restrictive version of the
-    previous "inline C" idea.
-    - Before, both pi calc threads and C code could read from the same channel. Now certain
-      ends of channels are permanently marked as foreign and can only be handled by a
-      single C handler.
-  - This is probably fine? If you want both C code and pi calc threads to read from
-    a channel ch, can write:
-      foreign x -> ch' { ... }
-      loop x <- ch; x -> ch'.
-    i.e. a single process occasionally can steal stuff from ch and forward it on to ch',
-    which the single C handler can read from. All other pi calc threads can still use
-    ch as before, but now occasionally this forwarding thread will win and send a value
-    off to C land.
-    Likewise, if you want both C code and pi calc threads to write to ch, can write:
-      foreign <- ch' { ... }
-      loop x <- ch'; x -> ch.
-    All pi calc threads can still write to/read from ch as before, but now occasionally
-    the forwarding loop will win, read a value from C land through ch', and send it to ch.
-  - This way the pi calc and non pi calc worlds are nicely separated and there's a way to
-    unseparate them if really needed.
-  - Maybe it's better to bundle the foreign handlers together?
-      gt_ch adder;
-      gt_ch stdin_int;
-      gt_ch stdout_int;
-      void adder_handler(gt_ch ch) {
-        gt_write(ch, (gt_ch)((uint64_t)gt_read(ch) + (uint64_t)gt_read(ch)));
-      }
-      gt_ch stdin_int_handler(void) {
-        int c;
-        scanf("%d", &c);
-        return (gt_ch)c;
-      }
-      void stdout_int_handler(gt_ch c) {
-        printf("%d", (int)c);
-      }
-      void foreign_loop(void) {
-        for (;;) {
-          adder_handler(gt_read(adder));
-          gt_yield();
-          gt_write(stdin_int, stdin_int_handler());
-          gt_yield();
-          stdout_int_handler(gt_read(stdout_int));
-          gt_yield();
-        }
-      }
-    Then later, in main:
-      adder = gt_chan();
-      stdin_int = gt_chan();
-      stdout_int = gt_chan();
-      gt_go(foreign_loop, 0x10000);
+- To interact with C code:
+  - foreign { ... }; P
+    Plop some C code at global scope.
+  - x <- f y₁ .. yₙ; P
+    Call C function f with arguments y₁ .. yₙ, bind result to x, and continue as P.
+  - e.g.
+      loop
+        c <~ getchar;
+        _ <~ putchar c.
+  - Can also have nested calls:
+      loop _ <~ putchar (getchar).
+      loop _ <~ write_int (add (read_int) (read_int)).
+  - Later on, maybe can have actual parsing:
+      loop _ <~ write_int(read_int() + read_int()).
 
 Compilation
 - FV for liveness analysis
